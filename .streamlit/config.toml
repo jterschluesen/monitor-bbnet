@@ -26,8 +26,3 @@ headingFontSizes = ["2.5rem", "1.5rem", "1rem"]
 
 [client]
 showSidebarNavigation = false
-
-[server]
-port = 8502
-address = "0.0.0.0"
-baseUrlPath = "bb-monitor"
