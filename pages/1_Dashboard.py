@@ -18,6 +18,19 @@ import pandas as pd
 from datetime import timedelta
 import plotly.express as px
 import plotly.graph_objects as go
+from data_sources import (
+    DEFAULT_STOCKS,
+    STOCKS,
+    URL_D86_CRNS,
+    URL_LOCATIONS,
+    URL_SWC_CRNS,
+    URL_SWC_SWAP,
+    load_locations,
+    load_time_series,
+    normalize_stocks,
+    selected_max_date,
+    selected_min_date,
+)
 
 st.set_page_config(
     page_title="Soil water viewer",
@@ -37,37 +50,13 @@ Helmholtz-Zentrums für Umweltforschung und des Landes Brandenburg.
 
 top_row = st.columns([1, 2])
 
-STOCKS = [
-    "OEH",
-    "LIN",
-    "MQ",
-    "PAU",
-    "BOO",
-    "DED",
-    "KH",
-    "GOL",
-    "TRE",
-    "DUB",
-    "FUE",
-]
-
-DEFAULT_STOCKS = ["OEH", "MQ", "DED"]
-
 
 def stocks_to_str(stocks):
     return ",".join(stocks)
 
 
-def normalize_stocks(stocks):
-    # Keep only known station IDs, preserve order, and remove duplicates.
-    normalized = []
-    seen = set()
-    for stock in stocks:
-        value = str(stock).upper().strip()
-        if value in STOCKS and value not in seen:
-            normalized.append(value)
-            seen.add(value)
-    return normalized
+locs = load_locations(URL_LOCATIONS)
+station_ids = [station for station in STOCKS if station in locs.index]
 
 
 if "tickers_input" not in st.session_state:
@@ -83,33 +72,75 @@ def update_query_param():
         st.query_params.pop("stocks", None)
 
 
-def update_stocks_from_map_selection():
-    map_state = st.session_state.get("stations_map", {})
-    points = map_state.get("selection", {}).get("points", [])
+def mark_main_horizon_custom():
+    st.session_state.selected_horizon = "Custom"
+    st.session_state.applied_horizon = "Custom"
 
+
+def stations_from_map_points(points):
     selected = []
     for point in points:
         station = point.get("customdata")
         if isinstance(station, (list, tuple)):
             station = station[0] if station else None
         if isinstance(station, str):
-            station = station.upper()
+            station = station.upper().strip()
+            if station == "MQ35":
+                station = "MQ"
+            elif station == "QUI":
+                station = "DED"
+
+        if station not in STOCKS:
+            point_index = point.get("pointIndex")
+            if point_index is None:
+                point_index = point.get("pointNumber")
+            if point_index is None:
+                point_index = point.get("point_index")
+            if isinstance(point_index, int) and 0 <= point_index < len(station_ids):
+                station = station_ids[point_index]
+
         if station in STOCKS and station not in selected:
             selected.append(station)
 
+    return selected
+
+
+def sync_stocks_from_map_selection():
+    map_state = st.session_state.get("stations_map", {})
+    selection = map_state.get("selection", {}) if isinstance(map_state, dict) else {}
+    if not isinstance(selection, dict) or "points" not in selection:
+        return
+
+    points = selection.get("points") or []
+    # Ignore non-map-triggered reruns where Streamlit reports an empty selection.
+    # This prevents timeframe/date widget changes from clearing current stations.
+    if not points:
+        return
+
+    selected = stations_from_map_points(points)
+
     # Single-point click toggles; box/lasso replaces selection.
-    if len(selected) == 1:
+    if len(points) == 1 and len(selected) == 1:
         clicked = selected[0]
         current = normalize_stocks(st.session_state.get("tickers_input", []))
         if clicked in current:
-            current = [station for station in current if station != clicked]
+            next_selection = [station for station in current if station != clicked]
         else:
-            current.append(clicked)
-        st.session_state.tickers_input = normalize_stocks(current)
+            next_selection = current + [clicked]
+        next_selection = normalize_stocks(next_selection)
     else:
-        st.session_state.tickers_input = selected
+        next_selection = selected
 
+    signature = tuple(next_selection)
+    if st.session_state.get("map_selection_signature") == signature:
+        return
+
+    st.session_state.map_selection_signature = signature
+    st.session_state.tickers_input = next_selection
     update_query_param()
+
+
+sync_stocks_from_map_selection()
 
 
 top_left_cell = top_row[0].container(
@@ -166,6 +197,7 @@ horizon_map = {
     "1 Jahr": 365,
     "2 Jahre": 2 * 365,
     "3 Jahre": 3 * 365,
+    "Custom": "custom",
 }
 
 tickers = normalize_stocks(st.session_state.tickers_input)
@@ -177,69 +209,11 @@ if not tickers:
     top_left_cell.info("Wähle mindestens einen Standort.", icon=":material/info:")
 
 
-@st.cache_data(ttl=12 * 3600)
-def load_data(url):
-    df = pd.read_csv(url, sep="\t", na_values="na")
-    # Parse all timestamps as UTC, then drop timezone info for consistent slicing.
-    df["datetime"] = pd.to_datetime(df["datetime"], utc=True).dt.tz_convert(None)
-    df = df.set_index("datetime")
-    df.index.name = "Date"
-    df = df.rename(columns={"QUI": "DED", "MQ35": "MQ"})
-    if "WUS" in df.columns:
-        df = df.drop(columns=["WUS"])
-    for col in df.columns:
-        df[col] = pd.to_numeric(df[col], errors="coerce")
-    return df
-
-
-@st.cache_data(ttl=12 * 3600)
-def load_locations(url):
-    df = pd.read_csv(url, sep=";")
-    return df.set_index("id")
-
-
 # data = load_data(dtimes, STOCKS, rho=0.7, seed=42)
-data2_full = load_data(
-    "https://b2drop.eudat.eu/public.php/dav/files/efStHSPAM8HLc92/products/swc-from-crns.txt"
-)
-sim2_full = load_data(
-    "https://b2drop.eudat.eu/public.php/dav/files/efStHSPAM8HLc92/products/swc-from-swap.txt"
-)
-d862_full = load_data(
-    "https://b2drop.eudat.eu/public.php/dav/files/efStHSPAM8HLc92/products/d86-from-crns.txt"
-)
-
-
-def selected_max_date(df, selected_tickers):
-    selected_cols = [ticker for ticker in selected_tickers if ticker in df.columns]
-    if selected_cols:
-        valid_selected = df[selected_cols].dropna(how="all")
-        if not valid_selected.empty:
-            return valid_selected.index.max().date()
-        # Do not fall back to unrelated stations when current selection has no data.
-        return df.index.min().date()
-
-    valid_all = df.dropna(how="all")
-    if not valid_all.empty:
-        return valid_all.index.max().date()
-    return df.index.max().date()
-
-
-def selected_min_date(df, selected_tickers):
-    selected_cols = [ticker for ticker in selected_tickers if ticker in df.columns]
-    if selected_cols:
-        last_dates = [
-            df[col].dropna().index.min()
-            for col in selected_cols
-            if not df[col].dropna().empty
-        ]
-        if last_dates:
-            return min(last_dates).date()
-
-    valid_all = df.dropna(how="all")
-    if not valid_all.empty:
-        return valid_all.index.min().date()
-    return df.index.min().date()
+data2_full = load_time_series(URL_SWC_CRNS)
+sim2_full = load_time_series(URL_SWC_SWAP)
+d862_full = load_time_series(URL_D86_CRNS)
+# https://b2drop.eudat.eu/s/yr5d6i72cCacYpH/swc-from-swap.txt
 
 
 min_date = selected_min_date(data2_full, tickers)
@@ -255,33 +229,55 @@ if "date_start" not in st.session_state:
 if "date_end" not in st.session_state:
     st.session_state.date_end = today_date
 
+ticker_signature = tuple(tickers)
+if "last_ticker_signature" not in st.session_state:
+    st.session_state.last_ticker_signature = ticker_signature
+if "last_selected_min_date" not in st.session_state:
+    st.session_state.last_selected_min_date = min_date
+
+# If a new station selection extends the available history, switch to Maximum range.
+if ticker_signature != st.session_state.last_ticker_signature:
+    previous_min_date = st.session_state.last_selected_min_date
+    if min_date < previous_min_date:
+        st.session_state.selected_horizon = "Maximum"
+        st.session_state.applied_horizon = "Maximum"
+        st.session_state.date_start = min_date
+        st.session_state.date_end = today_date
+    st.session_state.last_ticker_signature = ticker_signature
+
+st.session_state.last_selected_min_date = min_date
+
 with top_left_cell:
     # Reserve layout position so date pickers stay above the horizon selector.
     date_container = st.container()
+
+    if st.session_state.selected_horizon not in horizon_map:
+        st.session_state.selected_horizon = "Maximum"
 
     st.pills(
         "Zeithorizont",
         options=list(horizon_map.keys()),
         key="selected_horizon",
+        selection_mode="single",
     )
 
     horizon = st.session_state.selected_horizon
+    if horizon not in horizon_map:
+        horizon = "Maximum"
+        st.session_state.selected_horizon = horizon
     horizon_days = horizon_map[horizon]
 
     if horizon != st.session_state.applied_horizon:
         st.session_state.applied_horizon = horizon
-        if horizon_days is None:
+        if horizon_days == "custom":
+            pass
+        elif horizon_days is None:
             st.session_state.date_start = min_date
             st.session_state.date_end = today_date
         else:
             st.session_state.date_end = today_date
             candidate_start = today_date - timedelta(days=horizon_days - 1)
             st.session_state.date_start = max(min_date, candidate_start)
-
-    # In Maximum mode, always show the fullest range for selected stations up to today.
-    if horizon_days is None:
-        st.session_state.date_start = min_date
-        st.session_state.date_end = today_date
 
     # Keep existing values valid when selected stations change available date range.
     if st.session_state.date_end > today_date:
@@ -300,12 +296,14 @@ with top_left_cell:
             min_value=min_date,
             max_value=today_date,
             key="date_start",
+            on_change=mark_main_horizon_custom,
         )
         date_cols[1].date_input(
             "Ende",
             min_value=min_date,
             max_value=today_date,
             key="date_end",
+            on_change=mark_main_horizon_custom,
         )
 
 if st.session_state.date_start > st.session_state.date_end:
@@ -329,9 +327,7 @@ d86 = d862[tickers]
 
 summary_data = data if st.session_state.swc_source == "CRNS" else sim
 
-locs = load_locations(
-    "https://b2drop.eudat.eu/public.php/dav/files/efStHSPAM8HLc92/metadata/metadata-locations.csv"
-)
+locs = load_locations(URL_LOCATIONS)
 
 
 # @st.cache_resource(show_spinner=False, ttl="6h")
@@ -380,24 +376,56 @@ with map_cell:
 
     station_ids = [station for station in STOCKS if station in locs.index]
     station_locs = locs.loc[station_ids]
-    hover_columns = [
-        "name",
-        "landuse",
-        "manufacturer/model",
-        "biomass",
-        "rhob",
-        "som",
-        "soil_texture",
-        "gw_depth",
+    if (
+        "manufacturer" not in station_locs.columns
+        and "manufactur" in station_locs.columns
+    ):
+        station_locs["manufacturer"] = station_locs["manufactur"]
+    elif (
+        "manufacturer" in station_locs.columns and "manufactur" in station_locs.columns
+    ):
+        station_locs["manufacturer"] = station_locs["manufacturer"].fillna(
+            station_locs["manufactur"]
+        )
+
+    hover_fields = [
+        ("id", "ID"),
+        ("name", "Name"),
+        ("landuse", "Landnutzung"),
+        ("manufacturer", "Hersteller"),
+        # ("ka5_kurz", "KA5 kurz"),
+        ("ka5_bez", "Bodenart KA5"),
+        ("m1_wert", "kF (bis 1m)"),
+        ("m2_wert", "kF (bis 2m)"),
+        ("fk_1m_wert", "FK 1m"),
+        ("nfk_1m_wer", "nFK 1m"),
+        ("humus", "Humusgehalt"),
+        ("biomass_eff", "Biomasse [kg/m²]"),
+        ("bulk_density_eff", "Rohdichte [kg/m³]"),
+        # ("theta_eff", "Theta"),
+        # ("organic_matter_eff", "Organische Substanz"),
+        # ("lattice_water_eff", "Gitterwasser"),
+        # ("theta_total_eff_eff", "Theta gesamt"),
+        ("gw_depth", "GW Tiefe [m]"),
     ]
-    for col in hover_columns:
+
+    for col, _ in hover_fields:
         if col not in station_locs.columns:
             station_locs[col] = None
 
     station_attributes = [
-        [sid] + [station_locs.loc[sid, col] for col in hover_columns]
-        for sid in station_ids
+        [station_locs.loc[sid, col] for col, _ in hover_fields] for sid in station_ids
     ]
+
+    hover_lines = [
+        f"{label}: %{{customdata[{idx}]}}"
+        for idx, (_, label) in enumerate(hover_fields)
+    ]
+    hover_template = (
+        "<b>%{text}</b><br>"
+        + "<br>".join(hover_lines)
+        + "<br>Lat: %{lat:.4f}<br>Lon: %{lon:.4f}<extra></extra>"
+    )
 
     selected_point_indices = [
         idx for idx, station in enumerate(station_ids) if station in tickers
@@ -420,18 +448,7 @@ with map_cell:
             selectedpoints=selected_point_indices,
             selected=dict(marker=dict(size=16, color="#DC2626", opacity=1)),
             unselected=dict(marker=dict(size=12, opacity=0.85)),
-            hovertemplate=(
-                "<b>%{customdata[0]}</b><br>"
-                "Station: %{customdata[1]}<br>"
-                "Landnutzung: %{customdata[2]}<br>"
-                "Hersteller/Modell: %{customdata[3]}<br>"
-                "Biomasse: %{customdata[4]}<br>"
-                "rhob: %{customdata[5]}<br>"
-                "SOM: %{customdata[6]}<br>"
-                "Bodentextur: %{customdata[7]}<br>"
-                "GW-Tiefe: %{customdata[8]}<br>"
-                "Lat: %{lat:.4f}<br>Lon: %{lon:.4f}<extra></extra>"
-            ),
+            hovertemplate=hover_template,
         )
     )
 
@@ -481,7 +498,7 @@ with map_cell:
         fig,
         width="stretch",
         key="stations_map",
-        on_select=update_stocks_from_map_selection,
+        on_select="rerun",
         selection_mode=("points", "box", "lasso"),
         config={"scrollZoom": True},
     )
@@ -562,18 +579,27 @@ with st.expander("Download", expanded=False):
     download_min_date = selected_min_date(data2_full, effective_download_stations)
     download_max_date = today_date
 
+    if st.session_state.download_horizon not in horizon_map:
+        st.session_state.download_horizon = "Maximum"
+
     st.pills(
         "Download Zeithorizont",
         options=list(horizon_map.keys()),
         key="download_horizon",
+        selection_mode="single",
     )
 
     download_horizon = st.session_state.download_horizon
+    if download_horizon not in horizon_map:
+        download_horizon = "Maximum"
+        st.session_state.download_horizon = download_horizon
     download_horizon_days = horizon_map[download_horizon]
 
     if download_horizon != st.session_state.download_applied_horizon:
         st.session_state.download_applied_horizon = download_horizon
-        if download_horizon_days is None:
+        if download_horizon_days == "custom":
+            pass
+        elif download_horizon_days is None:
             st.session_state.download_start = download_min_date
             st.session_state.download_end = download_max_date
         else:
