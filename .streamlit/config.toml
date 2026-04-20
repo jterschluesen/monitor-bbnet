@@ -1,18 +1,18 @@
 [theme]
-base = "dark"
+base = "light"
 
 # General color setup
-textColor = "#e2e8f0"
+textColor = "#0f172a"
 primaryColor = "#615fff"
-backgroundColor = "#1d293d"
-secondaryBackgroundColor = "#0f172b"
+backgroundColor = "#ffffff"
+secondaryBackgroundColor = "#f8fafc"
 
 # Widgets
 showWidgetBorder = true
-borderColor = "#314158"
+borderColor = "#dbe2ea"
 
 # Dataframes
-dataframeHeaderBackgroundColor = "#1d293d"
+dataframeHeaderBackgroundColor = "#f8fafc"
 
 # Base text
 font = "'Space Grotesk':https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300..700&display=swap"
@@ -23,3 +23,11 @@ baseFontSize = 14
 headingFont = "Space Grotesk"
 headingFontWeights = [300, 400, 400, 300, 300, 300]
 headingFontSizes = ["2.5rem", "1.5rem", "1rem"]
+
+[client]
+showSidebarNavigation = false
+
+[server]
+port = 8502
+address = "0.0.0.0"
+baseUrlPath = "bb-monitor"
