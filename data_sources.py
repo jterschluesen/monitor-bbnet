@@ -22,10 +22,12 @@ from typing import Optional
 
 # REMOTE NEW:
 BASE_URL = "https://b2drop.eudat.eu//public.php/dav/files/yr5d6i72cCacYpH"
+# URL_SWC_CRNS = f"{BASE_URL}/swc-from-crns.txt"
 URL_SWC_CRNS = f"{BASE_URL}/swc-from-crns.txt"
 URL_SWC_SWAP = f"{BASE_URL}/swc-from-swap.txt"
 URL_D86_CRNS = f"{BASE_URL}/d86-from-crns.txt"
 URL_LOCATIONS = f"{BASE_URL}/metadata-locations.csv"
+URL_SWC_SMT = f"{BASE_URL}/vwc-from-smt.csv"
 
 STOCKS = [
     "OEH",
@@ -49,6 +51,8 @@ def load_time_series(url: str, sep: Optional[str] = None) -> pd.DataFrame:
     df = pd.read_csv(url, sep=sep, engine="python", na_values="na")
     if "datetime" not in df.columns and "Date" in df.columns:
         df = df.rename(columns={"Date": "datetime"})
+    if "datetime" not in df.columns and "Date_Time" in df.columns:
+        df = df.rename(columns={"Date_Time": "datetime"})
     df["datetime"] = pd.to_datetime(df["datetime"], utc=True).dt.tz_convert(None)
     df = df.set_index("datetime")
     df.index.name = "Date"
