@@ -11,6 +11,8 @@ from data_sources import (
     URL_SWC_CRNS,
     URL_SWC_SWAP,
     URL_SWC_SMT,
+    URL_SWC_NEPTOON_DES,
+    URL_SWC_NEPTOON_UTS,
     load_locations,
     load_time_series,
 )
@@ -23,8 +25,15 @@ st.set_page_config(
 
 st.title("Single Stations")
 st.write(
-    "Detaillierte Darstellung je Standort mit frei waehlbaren Variablen und Zeitraum."
+    "Detaillierte Darstellung je Standort mit frei wählbaren Variablen und Zeitraum."
 )
+
+COLOR_CRNS = "#E69F00"
+COLOR_SWAP = "#D55E00"
+COLOR_NEPTOON_DES = "#56B4E9"
+COLOR_NEPTOON_UTS = "#0072B2"
+SMT_GRAY_SCALE = ["#1F1F1F", "#4D4D4D", "#737373", "#A6A6A6", "#D0D0D0"]
+TRACE_ALPHA = 0.8
 
 
 def _depth_sort_key(depth_label: str):
@@ -32,6 +41,19 @@ def _depth_sort_key(depth_label: str):
     if number:
         return (0, int(number), depth_label)
     return (1, 0, depth_label)
+
+
+def _smt_color_map(depths):
+    if not depths:
+        return {}
+    if len(depths) == 1:
+        return {depths[0]: SMT_GRAY_SCALE[2]}
+    mapping = {}
+    max_idx = len(depths) - 1
+    for idx, depth in enumerate(depths):
+        scale_idx = round(idx * (len(SMT_GRAY_SCALE) - 1) / max_idx)
+        mapping[depth] = SMT_GRAY_SCALE[scale_idx]
+    return mapping
 
 
 def rename_smt_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -48,6 +70,8 @@ crns_full = load_time_series(URL_SWC_CRNS)
 swap_full = load_time_series(URL_SWC_SWAP)
 d86_full = load_time_series(URL_D86_CRNS)
 locs = load_locations(URL_LOCATIONS)
+neptoon_des_full = load_time_series(URL_SWC_NEPTOON_DES)
+neptoon_uts_full = load_time_series(URL_SWC_NEPTOON_UTS)
 SMT = load_time_series(URL_SWC_SMT)
 SMT = rename_smt_columns(SMT)
 
@@ -69,15 +93,22 @@ for station in selected_stations:
     station_name_map[station] = name or station
 
 selected_metrics = st.pills(
-    "Anzuzeigende Variablen",
-    # options=["SWC(CRNS)", "SWC(SWAP)", "D86", "SWC(SMT)"],
-    options=["SWC(CRNS)", "SWC(SWAP)", "D86"],
+    "Anzuzeigende Messgrößen",
+    options=[
+        "SWC(CRNS)",
+        "SWC(SWAP)",
+        "D86",
+        "SWC(SMT)",
+        "SWC(NEPTOON_DES)",
+        "SWC(NEPTOON_UTS)",
+    ],
+    # options=["SWC(CRNS)", "SWC(SWAP)", "D86"],
     default=["SWC(CRNS)", "SWC(SWAP)", "D86"],
     selection_mode="multi",
 )
 
 if not selected_metrics:
-    st.info("Waehle mindestens eine Variable.")
+    st.info("Wähle mindestens eine Variable.")
     st.stop()
 
 selected_smt_depths = []
@@ -92,8 +123,10 @@ if "SWC(SMT)" in selected_metrics:
         placeholder="Wähle SMT-Tiefen",
     )
     if not selected_smt_depths:
-        st.info("Waehle mindestens eine SMT-Tiefe.")
+        st.info("Wähle mindestens eine SMT-Tiefe.")
         st.stop()
+
+smt_color_map = _smt_color_map(selected_smt_depths)
 
 metric_frames = {}
 if "SWC(CRNS)" in selected_metrics:
@@ -111,6 +144,11 @@ if "SWC(SMT)" in selected_metrics:
     ]
     if smt_cols:
         metric_frames["SWC(SMT)"] = SMT[smt_cols]
+if "SWC(NEPTOON_DES)" in selected_metrics:
+    metric_frames["SWC(NEPTOON_DES)"] = neptoon_des_full[selected_stations]
+if "SWC(NEPTOON_UTS)" in selected_metrics:
+    metric_frames["SWC(NEPTOON_UTS)"] = neptoon_uts_full[selected_stations]
+
 
 combined_for_range = pd.concat(list(metric_frames.values()), axis=1)
 if combined_for_range.dropna(how="all").empty:
@@ -142,6 +180,10 @@ for i, station in enumerate(selected_stations):
         ]
         if smt_station_cols:
             station_frames.append(SMT[smt_station_cols])
+    if "SWC(NEPTOON_DES)" in selected_metrics:
+        station_frames.append(neptoon_des_full[[station]])
+    if "SWC(NEPTOON_UTS)" in selected_metrics:
+        station_frames.append(neptoon_uts_full[[station]])
 
     station_combined = pd.concat(station_frames, axis=1)
     station_valid = station_combined.dropna(how="all")
@@ -154,6 +196,8 @@ for i, station in enumerate(selected_stations):
     station_crns = crns_full.loc[station_start:station_end, station]
     station_swap = swap_full.loc[station_start:station_end, station]
     station_d86 = d86_full.loc[station_start:station_end, station]
+    station_neptoon_des = neptoon_des_full.loc[station_start:station_end, station]
+    station_neptoon_uts = neptoon_uts_full.loc[station_start:station_end, station]
     station_smt = (
         SMT.loc[station_start:station_end, smt_station_cols]
         if smt_station_cols
@@ -170,6 +214,7 @@ for i, station in enumerate(selected_stations):
                 fillcolor="rgba(0, 150, 200, 0.3)",
                 line=dict(color="rgb(0,150,200)", width=0),
                 fill="tozeroy",
+                opacity=TRACE_ALPHA,
             ),
             secondary_y=True,
         )
@@ -177,7 +222,12 @@ for i, station in enumerate(selected_stations):
     if "SWC(SWAP)" in selected_metrics:
         fig.add_trace(
             go.Scatter(
-                x=station_swap.index, y=station_swap, mode="lines", name="SWC(SWAP)"
+                x=station_swap.index,
+                y=station_swap,
+                mode="lines",
+                name="SWC (SWAP)",
+                line=dict(color=COLOR_SWAP),
+                opacity=TRACE_ALPHA,
             ),
             secondary_y=False,
         )
@@ -185,7 +235,37 @@ for i, station in enumerate(selected_stations):
     if "SWC(CRNS)" in selected_metrics:
         fig.add_trace(
             go.Scatter(
-                x=station_crns.index, y=station_crns, mode="lines", name="SWC(CRNS)"
+                x=station_crns.index,
+                y=station_crns,
+                mode="lines",
+                name="SWC (CRNS)",
+                line=dict(color=COLOR_CRNS),
+                opacity=TRACE_ALPHA,
+            ),
+            secondary_y=False,
+        )
+
+    if "SWC(NEPTOON_DES)" in selected_metrics:
+        fig.add_trace(
+            go.Scatter(
+                x=station_neptoon_des.index,
+                y=station_neptoon_des,
+                mode="lines",
+                name="SWC (NEPTOON_DES)",
+                line=dict(color=COLOR_NEPTOON_DES),
+                opacity=TRACE_ALPHA,
+            ),
+            secondary_y=False,
+        )
+    if "SWC(NEPTOON_UTS)" in selected_metrics:
+        fig.add_trace(
+            go.Scatter(
+                x=station_neptoon_uts.index,
+                y=station_neptoon_uts,
+                mode="lines",
+                name="SWC (NEPTOON_UTS)",
+                line=dict(color=COLOR_NEPTOON_UTS),
+                opacity=TRACE_ALPHA,
             ),
             secondary_y=False,
         )
@@ -198,8 +278,9 @@ for i, station in enumerate(selected_stations):
                     x=station_smt.index,
                     y=station_smt[smt_col],
                     mode="lines",
-                    name=f"SWC(SMT {depth})",
-                    line=dict(dash="dot"),
+                    name=f"SWC (SMT {depth})",
+                    line=dict(color=smt_color_map.get(depth, "#737373"), dash="dot"),
+                    opacity=TRACE_ALPHA,
                 ),
                 secondary_y=False,
             )

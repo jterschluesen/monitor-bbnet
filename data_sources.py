@@ -28,6 +28,8 @@ URL_SWC_SWAP = f"{BASE_URL}/swc-from-swap.txt"
 URL_D86_CRNS = f"{BASE_URL}/d86-from-crns.txt"
 URL_LOCATIONS = f"{BASE_URL}/metadata-locations.csv"
 URL_SWC_SMT = f"{BASE_URL}/vwc-from-smt.csv"
+URL_SWC_NEPTOON_DES = f"{BASE_URL}/swc-neptoon_DES.csv"
+URL_SWC_NEPTOON_UTS = f"{BASE_URL}/swc-neptoon_UTS.csv"
 
 STOCKS = [
     "OEH",
