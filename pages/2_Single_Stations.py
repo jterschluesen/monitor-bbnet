@@ -9,6 +9,7 @@ from data_sources import (
     URL_D86_CRNS,
     URL_LOCATIONS,
     URL_SWC_CRNS,
+    URL_SWC_CRNS_old,
     URL_SWC_SWAP,
     URL_SWC_SMT,
     URL_SWC_NEPTOON_DES,
@@ -29,6 +30,7 @@ st.write(
 )
 
 COLOR_CRNS = "#E69F00"
+COLOR_CRNS_old = "#DFF042"
 COLOR_SWAP = "#D55E00"
 COLOR_NEPTOON_DES = "#56B4E9"
 COLOR_NEPTOON_UTS = "#0072B2"
@@ -67,6 +69,7 @@ def rename_smt_columns(df: pd.DataFrame) -> pd.DataFrame:
 
 
 crns_full = load_time_series(URL_SWC_CRNS)
+crns_full_old = load_time_series(URL_SWC_CRNS_old)
 swap_full = load_time_series(URL_SWC_SWAP)
 d86_full = load_time_series(URL_D86_CRNS)
 locs = load_locations(URL_LOCATIONS)
@@ -96,6 +99,7 @@ selected_metrics = st.pills(
     "Anzuzeigende Messgrößen",
     options=[
         "SWC(CRNS)",
+        "SWC(CRNS_old)",
         "SWC(SWAP)",
         "D86",
         "SWC(SMT)",
@@ -131,6 +135,8 @@ smt_color_map = _smt_color_map(selected_smt_depths)
 metric_frames = {}
 if "SWC(CRNS)" in selected_metrics:
     metric_frames["SWC(CRNS)"] = crns_full[selected_stations]
+if "SWC(CRNS_old)" in selected_metrics:
+    metric_frames["SWC(CRNS_old)"] = crns_full_old[selected_stations]
 if "SWC(SWAP)" in selected_metrics:
     metric_frames["SWC(SWAP)"] = swap_full[selected_stations]
 if "D86" in selected_metrics:
@@ -148,6 +154,10 @@ if "SWC(NEPTOON_DES)" in selected_metrics:
     metric_frames["SWC(NEPTOON_DES)"] = neptoon_des_full[selected_stations]
 if "SWC(NEPTOON_UTS)" in selected_metrics:
     metric_frames["SWC(NEPTOON_UTS)"] = neptoon_uts_full[selected_stations]
+
+if not metric_frames:
+    st.warning("Keine Daten fuer die aktuelle Variablenauswahl gefunden.")
+    st.stop()
 
 
 combined_for_range = pd.concat(list(metric_frames.values()), axis=1)
@@ -167,6 +177,9 @@ for i, station in enumerate(selected_stations):
     station_frames = []
     if "SWC(CRNS)" in selected_metrics:
         station_frames.append(crns_full[[station]])
+    if "SWC(CRNS_old)" in selected_metrics:
+        if station in crns_full_old.columns:
+            station_frames.append(crns_full_old[[station]])
     if "SWC(SWAP)" in selected_metrics:
         station_frames.append(swap_full[[station]])
     if "D86" in selected_metrics:
@@ -194,6 +207,9 @@ for i, station in enumerate(selected_stations):
     station_end = station_valid.index.max()
 
     station_crns = crns_full.loc[station_start:station_end, station]
+    station_crns_old = None
+    if station in crns_full_old.columns:
+        station_crns_old = crns_full_old.loc[station_start:station_end, station]
     station_swap = swap_full.loc[station_start:station_end, station]
     station_d86 = d86_full.loc[station_start:station_end, station]
     station_neptoon_des = neptoon_des_full.loc[station_start:station_end, station]
@@ -240,6 +256,19 @@ for i, station in enumerate(selected_stations):
                 mode="lines",
                 name="SWC (CRNS)",
                 line=dict(color=COLOR_CRNS),
+                opacity=TRACE_ALPHA,
+            ),
+            secondary_y=False,
+        )
+
+    if "SWC(CRNS_old)" in selected_metrics and station_crns_old is not None:
+        fig.add_trace(
+            go.Scatter(
+                x=station_crns_old.index,
+                y=station_crns_old,
+                mode="lines",
+                name="SWC (CRNS_old)",
+                line=dict(color=COLOR_CRNS_old, dash="dash"),
                 opacity=TRACE_ALPHA,
             ),
             secondary_y=False,

@@ -24,12 +24,13 @@ from typing import Optional
 BASE_URL = "https://b2drop.eudat.eu//public.php/dav/files/yr5d6i72cCacYpH"
 # URL_SWC_CRNS = f"{BASE_URL}/swc-from-crns.txt"
 URL_SWC_CRNS = f"{BASE_URL}/swc-from-crns.txt"
+URL_SWC_CRNS_old = f"{BASE_URL}/swc-from-crns_oldpreproc.txt"
 URL_SWC_SWAP = f"{BASE_URL}/swc-from-swap.txt"
 URL_D86_CRNS = f"{BASE_URL}/d86-from-crns.txt"
 URL_LOCATIONS = f"{BASE_URL}/metadata-locations.csv"
 URL_SWC_SMT = f"{BASE_URL}/vwc-from-smt.csv"
-URL_SWC_NEPTOON_DES = f"{BASE_URL}/swc-neptoon_DES.csv"
-URL_SWC_NEPTOON_UTS = f"{BASE_URL}/swc-neptoon_UTS.csv"
+URL_SWC_NEPTOON_DES = f"{BASE_URL}/swc-neptoon_DES.txt"
+URL_SWC_NEPTOON_UTS = f"{BASE_URL}/swc-neptoon_UTS.txt"
 
 STOCKS = [
     "OEH",
@@ -43,6 +44,7 @@ STOCKS = [
     "TRE",
     "DUB",
     "FUE",
+    # "WUS",
 ]
 
 DEFAULT_STOCKS = ["OEH", "MQ", "DED"]
