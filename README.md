@@ -1,31 +1,4 @@
-# Stock peer group analysis
+# BB Monitor
 
-A Streamlit app where you can compare how different stocks fare against each other.
+Diese Seite dient der Darstellung vorläufiger Forschungsergebnisse zu den Themen Bodenfeuchte-Monitoring und Grundwasserneubildung in Brandenburg. Dazu kooperiert die Universität Potsdam mit dem Land Brandenburg, dem Helmholtz-Zentrum für Umweltforschung und dem Climate Change Center Berlin-Brandenburg, unter anderem in dem vom Land Brandenburg geförderten Projekt “Einfluss des Klimawandels auf die Grundwasserneubildung in Brandenburg: Anpassungsbedarfe und Hebelpunkte” und "Klimafolgen- und Anpoassung Brandenburg: Untersuchungen zum Landschaftswasserhaushalt und Starkregenrisikomanagement".
 
-## View it in one click
-
-[![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://stockpeers.streamlit.app)
-
-## Try it on your machine
-
-1. Get the code:
-
-   ```sh
-   $ git clone https://github.com/streamlit/demo-stockpeers.git
-   ```
-
-2. Start a virtual environment and get the dependencies (requires uv):
-
-   ```sh
-   $ uv venv
-
-   $ .venv/bin/activate
-
-   $ uv sync
-   ```
-
-3. Start the app:
-
-    ```sh
-    $ streamlit run streamlit_app.py
-    ```

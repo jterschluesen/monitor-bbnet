@@ -41,9 +41,10 @@ st.set_page_config(
 """
 # :material/query_stats: Bodenwassermonitor Brandenburg
 
-Die dargestellten Daten beruhen auf Neutronenmessungen und Modellsimulationen. 
-Das Monitoringprogramm ist eine Forschungskooperation der Universität Potsdam, des
-Helmholtz-Zentrums für Umweltforschung und des Landes Brandenburg.
+Diese Seite dient der Darstellung vorläufiger Forschungsergebnisse zu den Themen Bodenfeuchte-Monitoring und Grundwasserneubildung in Brandenburg. 
+Dazu kooperiert die Universität Potsdam mit dem Land Brandenburg, dem Helmholtz-Zentrum für Umweltforschung und dem Climate Change Center Berlin-Brandenburg, unter anderem in dem vom Land Brandenburg geförderten Projekt “Einfluss des Klimawandels auf die Grundwasserneubildung in Brandenburg: Anpassungsbedarfe und Hebelpunkte” und "Klimafolgen- und Anpoassung Brandenburg: Untersuchungen zum Landschaftswasserhaushalt und Starkregenrisikomanagement".
+Die dargestellten Daten beruhen auf Neutronenmessungen und Modellsimulationen (SWAP). 
+
 """
 
 ""  # Add some space.
@@ -162,7 +163,7 @@ with top_left_cell:
         st.session_state.map_style = "OpenStreetMap"
 
     st.radio(
-        "SWC fuer Zusammenfassungsplot",
+        "SWC für Übersichtsgrafik",
         options=["CRNS", "SWAP"],
         key="swc_source",
         horizontal=True,
@@ -392,13 +393,13 @@ with map_cell:
         ("id", "ID"),
         ("name", "Name"),
         ("landuse", "Landnutzung"),
-        ("manufacturer", "Hersteller"),
+        ("manufacturer/model", "Hersteller"),
         # ("ka5_kurz", "KA5 kurz"),
         ("ka5_bez", "Bodenart KA5"),
         ("m1_wert", "kF (bis 1m)"),
         ("m2_wert", "kF (bis 2m)"),
         ("fk_1m_wert", "FK 1m"),
-        ("nfk_1m_wer", "nFK 1m"),
+        ("nfk_1m_wert", "nFK 1m"),
         ("humus", "Humusgehalt"),
         ("biomass_eff", "Biomasse [kg/m²]"),
         ("bulk_density_eff", "Rohdichte [kg/m³]"),
@@ -434,7 +435,7 @@ with map_cell:
     fig = go.Figure()
 
     fig.add_trace(
-        go.Scattermapbox(
+        go.Scattermap(
             lat=station_locs.lat,
             lon=station_locs.lon,
             mode="markers+text",
@@ -468,18 +469,20 @@ with map_cell:
     #     text=locs.index
     # ))
 
-    mapbox_layout: dict[str, object] = dict(
+    map_layout: dict[str, object] = dict(
         zoom=6,
         center=dict(lat=52.507401395949145, lon=13.413453748453412),
     )
     if st.session_state.map_style == "OpenStreetMap":
-        mapbox_layout["style"] = "open-street-map"
+        map_layout["style"] = "open-street-map"
     elif st.session_state.map_style == "Carto Positron":
-        mapbox_layout["style"] = "carto-positron"
+        map_layout["style"] = "carto-positron"
+    elif st.session_state.map_style == "Carto Dark":
+        map_layout["style"] = "carto-darkmatter"
     else:
         # Google Satellite tiles as raster layer.
-        mapbox_layout["style"] = "white-bg"
-        mapbox_layout["layers"] = [
+        map_layout["style"] = "white-bg"
+        map_layout["layers"] = [
             {
                 "below": "traces",
                 "sourcetype": "raster",
@@ -489,7 +492,7 @@ with map_cell:
         ]
 
     fig.update_layout(
-        mapbox=mapbox_layout,
+        map=map_layout,
         height=420,
         margin=dict(l=0, r=0, t=0, b=0),
     )
@@ -504,11 +507,11 @@ with map_cell:
     )
 
 with main_plot_cell:
-    st.markdown("#### Zusammenfassungsplot")
+    st.markdown("#### Übersichtsgrafik")
     if tickers:
         fig = px.line(summary_data, x=summary_data.index, y=tickers)
         fig.update_layout(legend_title_text="Standorte")
-        fig.update_yaxes(title_text=f"SWC ({st.session_state.swc_source}) (m³/m³)")
+        fig.update_yaxes(title_text=f"SWC ({st.session_state.swc_source}) (cm³/cm³)")
         st.plotly_chart(fig, width="stretch")
     else:
         st.info("Waehle Standorte, um den Zeitreihen-Plot anzuzeigen.")

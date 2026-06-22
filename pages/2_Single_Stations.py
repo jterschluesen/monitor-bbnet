@@ -19,14 +19,16 @@ from data_sources import (
 )
 
 st.set_page_config(
-    page_title="Single Stations",
+    page_title="Einzelne Standorte",
     page_icon=":material/monitoring:",
     layout="wide",
 )
 
 st.title("Single Stations")
 st.write(
-    "Detaillierte Darstellung je Standort mit frei wählbaren Variablen und Zeitraum."
+    "Detaillierte Darstellung je Standort mit frei wählbaren Variablen und Zeitraum. "
+    "Dargestellte Daten beruhen auf Neutronenmessungen (CRNS), Bodenfeuchtemessungen (SMTs) und Modellsimulationen (SWAP). "
+    "Die Eindringtiefe des CRNS hängt u.a. von der Bodenfeuchte selbst ab und ist daher dynamisch. Zur besseren Vergleichbarkeit mit dem CRNS-Signal sind die SWAP-Simulationsergebnisse ebenfalls entsprechend der Eindringtiefe des CRNS als tiefengewichteter Mittelwert dargestellt."
 )
 
 COLOR_CRNS = "#E69F00"

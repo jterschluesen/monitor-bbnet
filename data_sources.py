@@ -28,31 +28,36 @@ URL_SWC_CRNS_old = f"{BASE_URL}/swc-from-crns_oldpreproc.txt"
 URL_SWC_SWAP = f"{BASE_URL}/swc-from-swap.txt"
 URL_D86_CRNS = f"{BASE_URL}/d86-from-crns.txt"
 URL_LOCATIONS = f"{BASE_URL}/metadata-locations.csv"
-URL_SWC_SMT = f"{BASE_URL}/vwc-from-smt.csv"
+URL_SWC_SMT = f"{BASE_URL}/vwc-from-smt_daily.txt"
 URL_SWC_NEPTOON_DES = f"{BASE_URL}/swc-neptoon_DES.txt"
 URL_SWC_NEPTOON_UTS = f"{BASE_URL}/swc-neptoon_UTS.txt"
+URL_SWC_NEPTOON_DES_old = f"{BASE_URL}/swc-neptoon_DES_oldpreproc.txt"
+URL_SWC_NEPTOON_UTS_old = f"{BASE_URL}/swc-neptoon_UTS_oldpreproc.txt"
 
 STOCKS = [
-    "OEH",
-    "LIN",
-    "MQ",
-    "PAU",
+    "BEE",
     "BOO",
     "DED",
-    "KH",
-    "GOL",
-    "TRE",
     "DUB",
     "FUE",
+    "GOL",
+    "KH",
+    "LIN",
+    "MQ",
+    "OEH",
+    "PAU",
+    "TRE",
     # "WUS",
 ]
 
-DEFAULT_STOCKS = ["OEH", "MQ", "DED"]
+DEFAULT_STOCKS = ["OEH", "MQ", "LIN"]
 
 
 @st.cache_data(ttl=12 * 3600)
-def load_time_series(url: str, sep: Optional[str] = None) -> pd.DataFrame:
+def load_time_series(url: str, sep: Optional[str] = "\t") -> pd.DataFrame:
     df = pd.read_csv(url, sep=sep, engine="python", na_values="na")
+    if sep == "\t" and df.shape[1] == 1:
+        df = pd.read_csv(url, sep=",", engine="python", na_values="na")
     if "datetime" not in df.columns and "Date" in df.columns:
         df = df.rename(columns={"Date": "datetime"})
     if "datetime" not in df.columns and "Date_Time" in df.columns:
@@ -69,8 +74,12 @@ def load_time_series(url: str, sep: Optional[str] = None) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=12 * 3600)
-def load_locations(url: str = URL_LOCATIONS, sep: Optional[str] = None) -> pd.DataFrame:
+def load_locations(url: str = URL_LOCATIONS, sep: Optional[str] = "\t") -> pd.DataFrame:
     df = pd.read_csv(url, sep=sep, engine="python")
+    if sep == "\t" and df.shape[1] == 1:
+        df = pd.read_csv(url, sep=",", engine="python")
+    # replace in id MQ35 with MQ
+    df["id"] = df["id"].str.replace("MQ35", "MQ")
     return df.set_index("id")
 
 
