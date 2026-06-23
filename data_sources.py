@@ -1,5 +1,6 @@
 import pandas as pd
 import streamlit as st
+import plotly.graph_objects as go
 from datetime import date
 from typing import Optional
 
@@ -33,6 +34,7 @@ URL_SWC_NEPTOON_DES = f"{BASE_URL}/swc-neptoon_DES.txt"
 URL_SWC_NEPTOON_UTS = f"{BASE_URL}/swc-neptoon_UTS.txt"
 URL_SWC_NEPTOON_DES_old = f"{BASE_URL}/swc-neptoon_DES_oldpreproc.txt"
 URL_SWC_NEPTOON_UTS_old = f"{BASE_URL}/swc-neptoon_UTS_oldpreproc.txt"
+URL_SNOW_FLAGS = f"{BASE_URL}/snow-flags.csv"
 
 STOCKS = [
     "BEE",
@@ -47,7 +49,7 @@ STOCKS = [
     "OEH",
     "PAU",
     "TRE",
-    # "WUS",
+    "WUS",
 ]
 
 DEFAULT_STOCKS = ["OEH", "MQ", "LIN"]
@@ -66,8 +68,6 @@ def load_time_series(url: str, sep: Optional[str] = "\t") -> pd.DataFrame:
     df = df.set_index("datetime")
     df.index.name = "Date"
     df = df.rename(columns={"QUI": "DED", "MQ35": "MQ"})
-    if "WUS" in df.columns:
-        df = df.drop(columns=["WUS"])
     for col in df.columns:
         df[col] = pd.to_numeric(df[col], errors="coerce")
     return df
@@ -125,3 +125,168 @@ def selected_min_date(df: pd.DataFrame, selected_tickers) -> date:
     if not valid_all.empty:
         return valid_all.index.min().date()
     return df.index.min().date()
+
+
+SNOW_FILL = "rgba(120, 120, 120, 0.20)"
+
+
+@st.cache_data(ttl=12 * 3600)
+def load_snow_flags(url: str = URL_SNOW_FLAGS) -> pd.DataFrame:
+    """Daily per-site snow flags (incl. an ``any_site`` aggregate column).
+
+    Fails soft: if the file is missing/unreachable, return an empty frame so the
+    plots simply render without snow shading instead of breaking the page.
+    """
+    try:
+        df = pd.read_csv(url, sep=",", engine="python")
+    except Exception:
+        return pd.DataFrame()
+    df["datetime"] = pd.to_datetime(df["datetime"]).dt.tz_localize(None)
+    df = df.set_index("datetime").sort_index()
+    df.index.name = "Date"
+    return df
+
+
+def snow_periods(snow_df: pd.DataFrame, column: str = "any_site"):
+    """Contiguous date ranges where ``column`` is True.
+
+    Returns a list of (start, end) Timestamps. Consecutive flagged days (gap of
+    one day or less) are merged; each period is extended by one day at the end so
+    isolated single-day flags stay visible when shaded.
+    """
+    if snow_df is None or column not in snow_df.columns:
+        return []
+    flags = snow_df[column].astype(str).str.strip().str.lower().eq("true")
+    flagged = flags[flags].index
+    if len(flagged) == 0:
+        return []
+    periods = []
+    start = prev = flagged[0]
+    for cur in flagged[1:]:
+        if (cur - prev) <= pd.Timedelta(days=1):
+            prev = cur
+            continue
+        periods.append((start, prev + pd.Timedelta(days=1)))
+        start = prev = cur
+    periods.append((start, prev + pd.Timedelta(days=1)))
+    return periods
+
+
+def add_snow_shading(fig, periods, *, xrange=None, add_legend=True):
+    """Shade snow phases as background rectangles on a Plotly figure.
+
+    ``xrange`` (lo, hi) clips the rectangles to the visible window so the shapes
+    never expand the x-axis autorange. Works on plain and secondary-y figures
+    because shapes are anchored to ``yref="paper"``.
+    """
+    if not periods:
+        return fig
+    if xrange is not None:
+        lo, hi = xrange
+        clipped = []
+        for start, end in periods:
+            if end < lo or start > hi:
+                continue
+            clipped.append((max(start, lo), min(end, hi)))
+        periods = clipped
+    if not periods:
+        return fig
+    for start, end in periods:
+        fig.add_shape(
+            type="rect",
+            xref="x",
+            yref="paper",
+            x0=start,
+            x1=end,
+            y0=0,
+            y1=1,
+            fillcolor=SNOW_FILL,
+            line_width=0,
+            layer="below",
+        )
+    if add_legend:
+        fig.add_trace(
+            go.Scatter(
+                x=[None],
+                y=[None],
+                mode="markers",
+                marker=dict(size=10, symbol="square", color=SNOW_FILL),
+                name="Schneephase",
+                hoverinfo="skip",
+            )
+        )
+    return fig
+
+
+def add_calibration_marker(
+    fig,
+    caldate,
+    theta=None,
+    *,
+    crns_index=None,
+    xrange=None,
+    secondary_y=False,
+    color="#000000",
+):
+    """Mark the local CRNS calibration as a point at (caldate, theta_eff).
+
+    ``caldate`` is snapped onto ``crns_index`` (nearest sample) so the point lands
+    exactly on a plotted CRNS timestep: CRNS is backward-aggregated, so e.g. a
+    12:00 calibration on a daily series aligns to the bounding 00:00 stamp (and
+    likewise to the last 6 h stamp on 6-hourly data). The marker sits on the SWC
+    axis at the theta value; an annotation labels the calibration date.
+    """
+    caldate = pd.to_datetime(caldate, errors="coerce")
+    if pd.isna(caldate) or theta is None or pd.isna(theta):
+        return fig
+    try:
+        theta = float(theta)
+    except (TypeError, ValueError):
+        return fig
+    caldate_dt = caldate
+    calstart = caldate_dt - pd.Timedelta(hours=2)
+    calend = caldate_dt + pd.Timedelta(hours=2)
+
+    # if crns_index is not None and len(crns_index) > 0:
+    #    pos = crns_index.get_indexer([caldate], method="pad")[0]
+    #    if pos != -1:
+    #        caldate = crns_index[pos]
+
+    if xrange is not None:
+        lo, hi = xrange
+        if caldate < lo or caldate > hi:
+            return fig
+
+    label = f"Lokale Kalibrierung am {caldate_dt:%Y-%m-%d} von {calstart:%H:%M} bis {calend:%H:%M} Uhr"
+    marker = go.Scatter(
+        x=[caldate],
+        y=[theta],
+        mode="markers",
+        name="Lokale Kalibrierung",
+        marker=dict(symbol="circle-open-dot", size=12, color=color, line=dict(width=0)),
+        hovertemplate=f"{label}<br>θ={theta:.2f}<extra></extra>",
+    )
+    try:
+        # secondary_y is only valid on make_subplots figures; plain figures raise.
+        fig.add_trace(marker, secondary_y=secondary_y)
+    except Exception:
+        fig.add_trace(marker)
+
+    fig.add_vline(
+        x=caldate,
+        line=dict(color=color, width=1, dash="dot"),
+        name="Lokale Kalibrierung",
+    )
+    # fig.add_annotation(
+    #    x=caldate,
+    #    y=theta,
+    #    xref="x",
+    #    yref="y",
+    #    text=label,
+    #    showarrow=True,
+    #    arrowhead=0,
+    #    ax=0,
+    #    ay=-25,
+    #    font=dict(size=10, color=color),
+    # )
+    return fig

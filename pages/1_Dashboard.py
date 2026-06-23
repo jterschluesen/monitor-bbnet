@@ -25,11 +25,15 @@ from data_sources import (
     URL_LOCATIONS,
     URL_SWC_CRNS,
     URL_SWC_SWAP,
+    URL_SNOW_FLAGS,
+    add_snow_shading,
     load_locations,
+    load_snow_flags,
     load_time_series,
     normalize_stocks,
     selected_max_date,
     selected_min_date,
+    snow_periods,
 )
 
 st.set_page_config(
@@ -214,6 +218,7 @@ if not tickers:
 data2_full = load_time_series(URL_SWC_CRNS)
 sim2_full = load_time_series(URL_SWC_SWAP)
 d862_full = load_time_series(URL_D86_CRNS)
+snow_phase_periods = snow_periods(load_snow_flags(URL_SNOW_FLAGS))
 # https://b2drop.eudat.eu/s/yr5d6i72cCacYpH/swc-from-swap.txt
 
 
@@ -322,9 +327,11 @@ if data2.empty:
     st.warning("Keine Daten im gewaelten Zeitraum gefunden.")
     st.stop()
 
-data = data2[tickers]
-sim = sim2[tickers]
-d86 = d862[tickers]
+# reindex (not direct selection): stations missing from a source - e.g. WUS,
+# which has no SWAP run - become NaN columns instead of raising KeyError.
+data = data2.reindex(columns=tickers)
+sim = sim2.reindex(columns=tickers)
+d86 = d862.reindex(columns=tickers)
 
 summary_data = data if st.session_state.swc_source == "CRNS" else sim
 
@@ -509,9 +516,15 @@ with map_cell:
 with main_plot_cell:
     st.markdown("#### Übersichtsgrafik")
     if tickers:
-        fig = px.line(summary_data, x=summary_data.index, y=tickers)
+        fig = px.line(
+            summary_data,
+            x=summary_data.index,
+            y=tickers,
+            color_discrete_sequence=px.colors.qualitative.Safe,
+        )
         fig.update_layout(legend_title_text="Standorte")
         fig.update_yaxes(title_text=f"SWC ({st.session_state.swc_source}) (cm³/cm³)")
+        add_snow_shading(fig, snow_phase_periods, xrange=(date_start, date_end))
         st.plotly_chart(fig, width="stretch")
     else:
         st.info("Waehle Standorte, um den Zeitreihen-Plot anzuzeigen.")
@@ -648,7 +661,9 @@ with st.expander("Download", expanded=False):
     for source_name, source_df in selected_sources:
         source_slice = source_df.loc[download_start:download_end]
         if normalized_download_stations:
-            source_slice = source_slice[normalized_download_stations]
+            # reindex so a station absent from this source (e.g. WUS in SWAP)
+            # yields an empty column instead of a KeyError.
+            source_slice = source_slice.reindex(columns=normalized_download_stations)
         else:
             source_slice = pd.DataFrame(index=source_slice.index)
         source_slice = source_slice.rename(columns=lambda col: f"{col}_{source_name}")

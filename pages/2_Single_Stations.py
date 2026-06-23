@@ -14,8 +14,13 @@ from data_sources import (
     URL_SWC_SMT,
     URL_SWC_NEPTOON_DES,
     URL_SWC_NEPTOON_UTS,
+    URL_SNOW_FLAGS,
+    add_calibration_marker,
+    add_snow_shading,
     load_locations,
+    load_snow_flags,
     load_time_series,
+    snow_periods,
 )
 
 st.set_page_config(
@@ -31,13 +36,36 @@ st.write(
     "Die Eindringtiefe des CRNS hängt u.a. von der Bodenfeuchte selbst ab und ist daher dynamisch. Zur besseren Vergleichbarkeit mit dem CRNS-Signal sind die SWAP-Simulationsergebnisse ebenfalls entsprechend der Eindringtiefe des CRNS als tiefengewichteter Mittelwert dargestellt."
 )
 
-COLOR_CRNS = "#E69F00"
-COLOR_CRNS_old = "#DFF042"
-COLOR_SWAP = "#D55E00"
-COLOR_NEPTOON_DES = "#56B4E9"
-COLOR_NEPTOON_UTS = "#0072B2"
+# All hues are from the Okabe-Ito colour-vision-deficiency-safe palette.
+COLOR_CRNS = "#E69F00"  # orange
+COLOR_CRNS_old = "#CC79A7"  # reddish purple
+COLOR_SWAP = "#D55E00"  # vermillion
+COLOR_NEPTOON_DES = "#56B4E9"  # sky blue
+COLOR_NEPTOON_UTS = "#0072B2"  # blue
+COLOR_D86 = "#009E73"  # bluish green - kept distinct from the SWC blues
 SMT_GRAY_SCALE = ["#1F1F1F", "#4D4D4D", "#737373", "#A6A6A6", "#D0D0D0"]
 TRACE_ALPHA = 0.8
+
+# Internal metric key -> readable label (legend + selector). Grouped by source.
+METRIC_LABELS = {
+    "SWC(CRNS)": "SWC (CRNS, general)",
+    "SWC(CRNS_old)": "SWC (CRNS, general, alt)",
+    "SWC(NEPTOON_DES)": "SWC (CRNS, Desilet)",
+    "SWC(NEPTOON_UTS)": "SWC (CRNS, UTS)",
+    "D86": "D86 (CRNS)",
+    "SWC(SWAP)": "SWC (SWAP)",
+    "SWC(SMT)": "SWC (SMT)",
+}
+
+CRNS_METRICS = [
+    "SWC(CRNS)",
+    # "SWC(CRNS_old)",
+    "SWC(NEPTOON_DES)",
+    "SWC(NEPTOON_UTS)",
+    "D86",
+]
+MODEL_METRICS = ["SWC(SWAP)"]
+OTHER_METRICS = ["SWC(SMT)"]
 
 
 def _depth_sort_key(depth_label: str):
@@ -60,6 +88,16 @@ def _smt_color_map(depths):
     return mapping
 
 
+def _station_series(df: pd.DataFrame, station: str, start=None, end=None):
+    # Some stations are absent from some sources (e.g. WUS has no SWAP run).
+    if station not in df.columns:
+        return None
+    series = df[station]
+    if start is not None:
+        series = series.loc[start:end]
+    return series
+
+
 def rename_smt_columns(df: pd.DataFrame) -> pd.DataFrame:
     renamed = {}
     for col in df.columns:
@@ -79,6 +117,8 @@ neptoon_des_full = load_time_series(URL_SWC_NEPTOON_DES)
 neptoon_uts_full = load_time_series(URL_SWC_NEPTOON_UTS)
 SMT = load_time_series(URL_SWC_SMT)
 SMT = rename_smt_columns(SMT)
+snow_flags = load_snow_flags(URL_SNOW_FLAGS)
+snow_phase_periods = snow_periods(snow_flags)
 
 smt_depths = sorted(
     {col.split("_SMT_", 1)[1] for col in SMT.columns if "_SMT_" in col},
@@ -97,37 +137,62 @@ for station in selected_stations:
             name = value.strip()
     station_name_map[station] = name or station
 
-selected_metrics = st.pills(
-    "Anzuzeigende Messgrößen",
-    options=[
-        "SWC(CRNS)",
-        "SWC(CRNS_old)",
-        "SWC(SWAP)",
-        "D86",
-        "SWC(SMT)",
-        "SWC(NEPTOON_DES)",
-        "SWC(NEPTOON_UTS)",
-    ],
-    # options=["SWC(CRNS)", "SWC(SWAP)", "D86"],
-    default=["SWC(CRNS)", "SWC(SWAP)", "D86"],
-    selection_mode="multi",
-)
+with st.expander("Datenauswahl", expanded=True):
+    col_crns, col_model, col_other = st.columns(3)
+    with col_crns:
+        st.markdown("**CRNS-basiert**")
+        crns_sel = st.pills(
+            "CRNS-basiert",
+            options=CRNS_METRICS,
+            format_func=lambda m: METRIC_LABELS[m],
+            default=["SWC(CRNS)", "SWC(NEPTOON_UTS)", "D86"],
+            selection_mode="multi",
+            label_visibility="collapsed",
+            key="metrics_crns",
+        )
+    with col_model:
+        st.markdown("**Modellbasiert**")
+        model_sel = st.pills(
+            "Modellbasiert",
+            options=MODEL_METRICS,
+            format_func=lambda m: METRIC_LABELS[m],
+            default=["SWC(SWAP)"],
+            selection_mode="multi",
+            label_visibility="collapsed",
+            key="metrics_model",
+        )
+    with col_other:
+        st.markdown("**Weitere**")
+        other_sel = st.pills(
+            "Weitere",
+            options=OTHER_METRICS,
+            format_func=lambda m: METRIC_LABELS[m],
+            default=[],
+            selection_mode="multi",
+            label_visibility="collapsed",
+            key="metrics_other",
+        )
+    selected_metrics = list(crns_sel) + list(model_sel) + list(other_sel)
+
+    selected_smt_depths = []
+    if "SWC(SMT)" in selected_metrics and smt_depths:
+        # Default to the depth-weighted SMT series; individual depths stay selectable.
+        default_smt_depths = ["weighted"] if "weighted" in smt_depths else smt_depths
+        selected_smt_depths = st.multiselect(
+            "SMT Tiefen",
+            options=smt_depths,
+            default=default_smt_depths,
+            placeholder="Wähle SMT-Tiefen",
+        )
 
 if not selected_metrics:
     st.info("Wähle mindestens eine Variable.")
     st.stop()
 
-selected_smt_depths = []
 if "SWC(SMT)" in selected_metrics:
     if not smt_depths:
         st.warning("Keine SMT-Tiefen in den Daten gefunden.")
         st.stop()
-    selected_smt_depths = st.multiselect(
-        "SMT Tiefen",
-        options=smt_depths,
-        default=smt_depths,
-        placeholder="Wähle SMT-Tiefen",
-    )
     if not selected_smt_depths:
         st.info("Wähle mindestens eine SMT-Tiefe.")
         st.stop()
@@ -135,14 +200,16 @@ if "SWC(SMT)" in selected_metrics:
 smt_color_map = _smt_color_map(selected_smt_depths)
 
 metric_frames = {}
+# reindex (not direct selection) so stations missing from a source - e.g. WUS,
+# which has no SWAP run - yield NaN columns instead of a KeyError.
 if "SWC(CRNS)" in selected_metrics:
-    metric_frames["SWC(CRNS)"] = crns_full[selected_stations]
+    metric_frames["SWC(CRNS)"] = crns_full.reindex(columns=selected_stations)
 if "SWC(CRNS_old)" in selected_metrics:
-    metric_frames["SWC(CRNS_old)"] = crns_full_old[selected_stations]
+    metric_frames["SWC(CRNS_old)"] = crns_full_old.reindex(columns=selected_stations)
 if "SWC(SWAP)" in selected_metrics:
-    metric_frames["SWC(SWAP)"] = swap_full[selected_stations]
+    metric_frames["SWC(SWAP)"] = swap_full.reindex(columns=selected_stations)
 if "D86" in selected_metrics:
-    metric_frames["D86"] = d86_full[selected_stations]
+    metric_frames["D86"] = d86_full.reindex(columns=selected_stations)
 if "SWC(SMT)" in selected_metrics:
     smt_cols = [
         f"{station}_SMT_{depth}"
@@ -153,9 +220,13 @@ if "SWC(SMT)" in selected_metrics:
     if smt_cols:
         metric_frames["SWC(SMT)"] = SMT[smt_cols]
 if "SWC(NEPTOON_DES)" in selected_metrics:
-    metric_frames["SWC(NEPTOON_DES)"] = neptoon_des_full[selected_stations]
+    metric_frames["SWC(NEPTOON_DES)"] = neptoon_des_full.reindex(
+        columns=selected_stations
+    )
 if "SWC(NEPTOON_UTS)" in selected_metrics:
-    metric_frames["SWC(NEPTOON_UTS)"] = neptoon_uts_full[selected_stations]
+    metric_frames["SWC(NEPTOON_UTS)"] = neptoon_uts_full.reindex(
+        columns=selected_stations
+    )
 
 if not metric_frames:
     st.warning("Keine Daten fuer die aktuelle Variablenauswahl gefunden.")
@@ -173,18 +244,20 @@ NUM_COLS = 2
 cols = st.columns(NUM_COLS)
 
 for i, station in enumerate(selected_stations):
+    #skip WUS
+    if station == "WUS":
+        continue
     has_d86 = "D86" in selected_metrics
     fig = make_subplots(specs=[[{"secondary_y": has_d86}]])
 
     station_frames = []
-    if "SWC(CRNS)" in selected_metrics:
+    if "SWC(CRNS)" in selected_metrics and station in crns_full.columns:
         station_frames.append(crns_full[[station]])
-    if "SWC(CRNS_old)" in selected_metrics:
-        if station in crns_full_old.columns:
-            station_frames.append(crns_full_old[[station]])
-    if "SWC(SWAP)" in selected_metrics:
+    if "SWC(CRNS_old)" in selected_metrics and station in crns_full_old.columns:
+        station_frames.append(crns_full_old[[station]])
+    if "SWC(SWAP)" in selected_metrics and station in swap_full.columns:
         station_frames.append(swap_full[[station]])
-    if "D86" in selected_metrics:
+    if "D86" in selected_metrics and station in d86_full.columns:
         station_frames.append(d86_full[[station]])
     smt_station_cols = []
     if "SWC(SMT)" in selected_metrics:
@@ -195,10 +268,13 @@ for i, station in enumerate(selected_stations):
         ]
         if smt_station_cols:
             station_frames.append(SMT[smt_station_cols])
-    if "SWC(NEPTOON_DES)" in selected_metrics:
+    if "SWC(NEPTOON_DES)" in selected_metrics and station in neptoon_des_full.columns:
         station_frames.append(neptoon_des_full[[station]])
-    if "SWC(NEPTOON_UTS)" in selected_metrics:
+    if "SWC(NEPTOON_UTS)" in selected_metrics and station in neptoon_uts_full.columns:
         station_frames.append(neptoon_uts_full[[station]])
+
+    if not station_frames:
+        continue
 
     station_combined = pd.concat(station_frames, axis=1)
     station_valid = station_combined.dropna(how="all")
@@ -208,55 +284,59 @@ for i, station in enumerate(selected_stations):
     station_start = station_valid.index.min()
     station_end = station_valid.index.max()
 
-    station_crns = crns_full.loc[station_start:station_end, station]
-    station_crns_old = None
-    if station in crns_full_old.columns:
-        station_crns_old = crns_full_old.loc[station_start:station_end, station]
-    station_swap = swap_full.loc[station_start:station_end, station]
-    station_d86 = d86_full.loc[station_start:station_end, station]
-    station_neptoon_des = neptoon_des_full.loc[station_start:station_end, station]
-    station_neptoon_uts = neptoon_uts_full.loc[station_start:station_end, station]
+    station_crns = _station_series(crns_full, station, station_start, station_end)
+    station_crns_old = _station_series(
+        crns_full_old, station, station_start, station_end
+    )
+    station_swap = _station_series(swap_full, station, station_start, station_end)
+    station_d86 = _station_series(d86_full, station, station_start, station_end)
+    station_neptoon_des = _station_series(
+        neptoon_des_full, station, station_start, station_end
+    )
+    station_neptoon_uts = _station_series(
+        neptoon_uts_full, station, station_start, station_end
+    )
     station_smt = (
         SMT.loc[station_start:station_end, smt_station_cols]
         if smt_station_cols
-        else pd.DataFrame(index=station_crns.index)
+        else pd.DataFrame(index=station_valid.index)
     )
 
-    if "D86" in selected_metrics:
+    if "D86" in selected_metrics and station_d86 is not None:
         fig.add_trace(
             go.Scatter(
                 x=station_d86.index,
                 y=-station_d86,
                 mode="lines",
-                name="D86",
-                fillcolor="rgba(0, 150, 200, 0.3)",
-                line=dict(color="rgb(0,150,200)", width=0),
+                name=METRIC_LABELS["D86"],
+                fillcolor="rgba(0, 158, 115, 0.3)",
+                line=dict(color=COLOR_D86, width=0),
                 fill="tozeroy",
                 opacity=TRACE_ALPHA,
             ),
             secondary_y=True,
         )
 
-    if "SWC(SWAP)" in selected_metrics:
+    if "SWC(SWAP)" in selected_metrics and station_swap is not None:
         fig.add_trace(
             go.Scatter(
                 x=station_swap.index,
                 y=station_swap,
                 mode="lines",
-                name="SWC (SWAP)",
+                name=METRIC_LABELS["SWC(SWAP)"],
                 line=dict(color=COLOR_SWAP),
                 opacity=TRACE_ALPHA,
             ),
             secondary_y=False,
         )
 
-    if "SWC(CRNS)" in selected_metrics:
+    if "SWC(CRNS)" in selected_metrics and station_crns is not None:
         fig.add_trace(
             go.Scatter(
                 x=station_crns.index,
                 y=station_crns,
                 mode="lines",
-                name="SWC (CRNS)",
+                name=METRIC_LABELS["SWC(CRNS)"],
                 line=dict(color=COLOR_CRNS),
                 opacity=TRACE_ALPHA,
             ),
@@ -269,32 +349,32 @@ for i, station in enumerate(selected_stations):
                 x=station_crns_old.index,
                 y=station_crns_old,
                 mode="lines",
-                name="SWC (CRNS_old)",
+                name=METRIC_LABELS["SWC(CRNS_old)"],
                 line=dict(color=COLOR_CRNS_old, dash="dash"),
                 opacity=TRACE_ALPHA,
             ),
             secondary_y=False,
         )
 
-    if "SWC(NEPTOON_DES)" in selected_metrics:
+    if "SWC(NEPTOON_DES)" in selected_metrics and station_neptoon_des is not None:
         fig.add_trace(
             go.Scatter(
                 x=station_neptoon_des.index,
                 y=station_neptoon_des,
                 mode="lines",
-                name="SWC (NEPTOON_DES)",
+                name=METRIC_LABELS["SWC(NEPTOON_DES)"],
                 line=dict(color=COLOR_NEPTOON_DES),
                 opacity=TRACE_ALPHA,
             ),
             secondary_y=False,
         )
-    if "SWC(NEPTOON_UTS)" in selected_metrics:
+    if "SWC(NEPTOON_UTS)" in selected_metrics and station_neptoon_uts is not None:
         fig.add_trace(
             go.Scatter(
                 x=station_neptoon_uts.index,
                 y=station_neptoon_uts,
                 mode="lines",
-                name="SWC (NEPTOON_UTS)",
+                name=METRIC_LABELS["SWC(NEPTOON_UTS)"],
                 line=dict(color=COLOR_NEPTOON_UTS),
                 opacity=TRACE_ALPHA,
             ),
@@ -334,6 +414,23 @@ for i, station in enumerate(selected_stations):
         ),
         margin=dict(l=40, r=20, t=50, b=90),
     )
+
+    add_snow_shading(fig, snow_phase_periods, xrange=(station_start, station_end))
+    if station in locs.index:
+        caldate = locs.loc[station, "caldate"] if "caldate" in locs.columns else None
+        theta = locs.loc[station, "theta_eff"] if "theta_eff" in locs.columns else None
+        # Snap onto the CRNS sample grid so the point aligns with the CRNS trace.
+        cal_index = (
+            station_crns.index if station_crns is not None else station_valid.index
+        )
+        add_calibration_marker(
+            fig,
+            caldate,
+            theta,
+            crns_index=cal_index,
+            xrange=(station_start, station_end),
+            secondary_y=False,
+        )
 
     cell = cols[i % NUM_COLS].container(border=True)
     cell.plotly_chart(fig, width="stretch", key=f"station_{station}")
