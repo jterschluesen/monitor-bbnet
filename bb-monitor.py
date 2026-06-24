@@ -23,6 +23,12 @@ pages = [
         title="Single Stations",
         icon=":material/monitoring:",
     ),
+    st.Page(
+        "pages/3_Drought_SMI.py",
+        title="Dürremonitor (SMI)",
+        icon=":material/water_drop:",
+    ),
+    
 ]
 
 pg = st.navigation(pages, position="top")

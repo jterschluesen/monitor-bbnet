@@ -35,6 +35,24 @@ URL_SWC_NEPTOON_UTS = f"{BASE_URL}/swc-neptoon_UTS.txt"
 URL_SWC_NEPTOON_DES_old = f"{BASE_URL}/swc-neptoon_DES_oldpreproc.txt"
 URL_SWC_NEPTOON_UTS_old = f"{BASE_URL}/swc-neptoon_UTS_oldpreproc.txt"
 URL_SNOW_FLAGS = f"{BASE_URL}/snow-flags.csv"
+URL_SMI_UFZ = f"{BASE_URL}/smi-from-swap-whole.txt"
+URL_SWAP_SM_0_30 = f"{BASE_URL}/swc-from-swap-mean-0_30.txt"
+URL_SWAP_SM_0_100 = f"{BASE_URL}/swc-from-swap-mean-0_100.txt"
+URL_SWAP_SM_100_200 = f"{BASE_URL}/swc-from-swap-mean-100_200.txt"
+# Per-station daily water balance + the 1994-2024 day-of-year normals.
+
+URL_BALANCE_NORMAL_DIR = "https://b2drop.eudat.eu//public.php/dav/files/7dHbNH26QT2nCef"
+URL_WATER_BALANCE = f"{URL_BALANCE_NORMAL_DIR}/{{station}}.csv"
+# Drought-index sources for the SMI page. Extend with one entry per new source.
+SMI_SOURCES = {
+    "SMI (14 Tage)": URL_SMI_UFZ,
+}
+# SWAP soil-moisture depth averages overlaid on the SMI page's secondary axis.
+SWAP_SM_DEPTHS = {
+    "0–30 cm": URL_SWAP_SM_0_30,
+    "0–100 cm (1 m)": URL_SWAP_SM_0_100,
+    "100–200 cm (2 m)": URL_SWAP_SM_100_200,
+}
 
 STOCKS = [
     "BEE",
@@ -290,3 +308,71 @@ def add_calibration_marker(
     #    font=dict(size=10, color=color),
     # )
     return fig
+
+
+# --- Soil-Moisture-Index drought bands (US Drought Monitor style) -------------
+# SMI in [0, 1]; lower = drier. (lo, hi, key); hi is exclusive except the top band.
+SMI_BANDS = [
+    (0.00, 0.02, "exceptional"),
+    (0.02, 0.05, "extreme"),
+    (0.05, 0.10, "severe"),
+    (0.10, 0.20, "moderate"),
+    (0.20, 0.30, "abnormally_dry"),
+    (0.30, 1.01, "no_drought"),
+]
+SMI_BAND_LABELS = {
+    "exceptional": "außergewöhnliche Dürre",
+    "extreme": "extreme Dürre",
+    "severe": "schwere Dürre",
+    "moderate": "moderate Dürre",
+    "abnormally_dry": "ungewöhnlich trocken",
+    "no_drought": "keine Dürre",
+}
+# CVD-safe RdYlBu-derived sequence (ColorBrewer flags RdYlBu colour-blind-safe):
+# dark red = worst drought, blue = wettest. Brightness also varies monotonically.
+SMI_BAND_COLORS = {
+    "exceptional": "#7b0000",
+    "extreme": "#d7191c",
+    "severe": "#fdae61",
+    "moderate": "#fee090",
+    "abnormally_dry": "#abd9e9",
+    "no_drought": "#2c7bb6",
+}
+SMI_NA_COLOR = "#cccccc"
+
+
+def smi_band(value):
+    """Map an SMI value to (key, German label, hex colour). NaN -> grey 'no data'."""
+    if value is None or pd.isna(value):
+        return (None, "keine Daten", SMI_NA_COLOR)
+    for lo, hi, key in SMI_BANDS:
+        if lo <= value < hi:
+            return (key, SMI_BAND_LABELS[key], SMI_BAND_COLORS[key])
+    # value at/above the top of the scale -> wettest band
+    key = SMI_BANDS[-1][2]
+    return (key, SMI_BAND_LABELS[key], SMI_BAND_COLORS[key])
+
+
+def add_smi_bands(fig, *, opacity=0.18):
+    """Shade the SMI drought bands as horizontal background stripes.
+
+    Uses ``add_shape`` with ``xref="paper"`` / ``yref="y"`` so it works on plain
+    and secondary-y figures and spans the full width without touching autorange.
+    """
+    for lo, hi, key in SMI_BANDS:
+        fig.add_shape(
+            type="rect",
+            xref="paper",
+            yref="y",
+            x0=0,
+            x1=1,
+            y0=lo,
+            y1=min(hi, 1.0),
+            fillcolor=SMI_BAND_COLORS[key],
+            opacity=opacity,
+            line_width=0,
+            layer="below",
+        )
+    return fig
+
+
