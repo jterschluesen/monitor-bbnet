@@ -5,6 +5,14 @@ from datetime import date
 from typing import Optional
 
 
+def construction_warning():
+    """Site-wide 'under construction / preliminary data' banner."""
+    st.warning(
+        "Diese Seite befindet sich im Aufbau. Alle Daten und Darstellungen sind "
+        "vorläufig und können sich noch ändern."
+    )
+
+
 # Local FIles
 # from pathlib import Path
 # LOCAL_DATA_DIR = Path(__file__).resolve().parent / "data"

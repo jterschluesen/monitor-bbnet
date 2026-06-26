@@ -25,7 +25,7 @@ pages = [
     ),
     st.Page(
         "pages/3_Drought_SMI.py",
-        title="Dürremonitor (SMI)",
+        title="Dürreampel (SMI)",
         icon=":material/water_drop:",
     ),
     

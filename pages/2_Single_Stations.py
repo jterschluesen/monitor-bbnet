@@ -6,6 +6,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from data_sources import (
     STOCKS,
+    construction_warning,
     URL_D86_CRNS,
     URL_LOCATIONS,
     URL_SWC_CRNS,
@@ -28,6 +29,8 @@ st.set_page_config(
     page_icon=":material/monitoring:",
     layout="wide",
 )
+
+construction_warning()
 
 st.title("Single Stations")
 st.write(
@@ -244,7 +247,7 @@ NUM_COLS = 2
 cols = st.columns(NUM_COLS)
 
 for i, station in enumerate(selected_stations):
-    #skip WUS
+    # skip WUS
     if station == "WUS":
         continue
     has_d86 = "D86" in selected_metrics

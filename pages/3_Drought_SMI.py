@@ -17,6 +17,7 @@ from data_sources import (
     SMI_SOURCES,
     SWAP_SM_DEPTHS,
     add_smi_bands,
+    construction_warning,
     load_time_series,
     selected_max_date,
     selected_min_date,
@@ -24,23 +25,25 @@ from data_sources import (
 )
 
 st.set_page_config(
-    page_title="Dürremonitor (SMI)",
+    page_title="Dürreampel (SMI)",
     page_icon=":material/water_drop:",
     layout="wide",
 )
 
-st.title("Dürremonitor (SMI)")
+construction_warning()
+
+st.title("Dürreampel (SMI)")
 st.write(
     "Bodenfeuchteindex (SMI) nach [UFZ-Dürreklassifizierung](https://www.ufz.de/index.php?de=37937). "
     "Der SMI liegt zwischen 0 (sehr trocken) "
     "und 1 (sehr feucht) und wird in Dürrekategorien eingeteilt. Die Kacheln zeigen den "
-    "aktuellen Status je Standort; darunter der zeitliche Verlauf mit hinterlegten "
+    "aktuellen Status je Standort an. Darunter der zeitliche Verlauf mit hinterlegten "
     "Dürrebändern. Optional kann die SWAP-Bodenfeuchte verschiedener Tiefen auf einer "
-    "zweiten Achse überlagert werden. "
+    "zweiten Achse überlagert werden."
     "Die Berechnung des SMI erfolgt angelehnt an Samaniego et al., 2013 und Zink et al., 2016 unter Nutzung des 14-tägigen Mitttels der Bodenfeuchte (Boeing et al., 2022). "
-    "Über Density Kernel Funktionen wird die aktuelle Bodenfeuchte in Relation zu den langjährigen SWAP Simulationen gesetzt und in die Dürreklassen eingeordnet, wobei die historische Verteilungen für jeden Tga im Har aus den "
-    "dem 14-tägige Gleitende Mittel der Bodenfeuchte über die Referenzperiode von 1994 bis 2024 berücksichtigt berechnet wird."
-    "Die Einordnung der aktuellen Bodenfeuchte basiert auf den langjährigen SWAP Bodenfeuchten Simulationen mit einer derzeitigen Referenzperiode von 1994 bis 2024 und wird analog zum UFZ Monitor Klassifiziert (Kumar et al., 2013; Marx et al., o.J.)"
+    "Die aktuelle Bodenfeuchte wird in Relation zu den langjährigen SWAP Simulationen gesetzt und in die Dürreklassen eingeordnet, wobei die historische Verteilungen für jeden Tag im Jahr aus "
+    "dem 14-tägige Gleitende Mittel der Bodenfeuchte über die Referenzperiode von 1993 bis 2023 berechnet wird."
+    "Die Einordnung der aktuellen Bodenfeuchte basiert auf den akutellen SWAP Simulationen und wird analog zum UFZ Monitor klassifiziert (Kumar et al., 2013; Marx et al., o.J.)"
 )
 
 # Stable colour-vision-deficiency-safe colour per station (CARTO "Safe").
@@ -96,21 +99,25 @@ order = sorted(
 )
 
 st.subheader("Aktueller Status")
-PER_ROW = 6
-for row_start in range(0, len(order), PER_ROW):
-    cols = st.columns(PER_ROW, gap="medium")
-    for j, station in enumerate(order[row_start : row_start + PER_ROW]):
-        value = latest_value[station]
-        _, label, color = smi_band(value)
-        text_color = _text_on(color)
-        value_str = "–" if value is None else f"{value:.2f}"
-        date_str = (
-            ""
-            if latest_date[station] is None
-            else latest_date[station].date().isoformat()
-        )
-        cols[j].markdown(
-            f"""
+
+grid_col, legend_col = st.columns([3, 1.5], gap="large")
+
+with grid_col:
+    PER_ROW = 4
+    for row_start in range(0, len(order), PER_ROW):
+        cols = st.columns(PER_ROW, gap="medium")
+        for j, station in enumerate(order[row_start : row_start + PER_ROW]):
+            value = latest_value[station]
+            _, label, color = smi_band(value)
+            text_color = _text_on(color)
+            value_str = "–" if value is None else f"{value:.2f}"
+            date_str = (
+                ""
+                if latest_date[station] is None
+                else latest_date[station].date().isoformat()
+            )
+            cols[j].markdown(
+                f"""
 <div style="background:{color};color:{text_color};border-radius:10px;margin:4px 0;
             padding:10px 6px;text-align:center;line-height:1.25;">
   <div style="font-weight:700;font-size:1.05rem;">{station}</div>
@@ -119,17 +126,29 @@ for row_start in range(0, len(order), PER_ROW):
   <div style="font-size:0.68rem;opacity:0.85;">{date_str}</div>
 </div>
 """,
-            unsafe_allow_html=True,
-        )
+                unsafe_allow_html=True,
+            )
 
-# Band legend (driest -> wettest).
-legend_chips = "".join(
-    f'<span style="background:{SMI_BAND_COLORS[key]};color:{_text_on(SMI_BAND_COLORS[key])};'
-    f"padding:2px 8px;border-radius:4px;margin:2px 4px 2px 0;display:inline-block;"
-    f'font-size:0.78rem;">{SMI_BAND_LABELS[key]}</span>'
-    for _, _, key in SMI_BANDS
-)
-st.markdown(legend_chips, unsafe_allow_html=True)
+with legend_col:
+    st.markdown("**Klassifizierung**")
+    # Legend rows, driest -> wettest, with SMI ranges and percentile classes.
+    legend_rows = "".join(
+        f'<div style="display:flex;align-items:center;margin:8px 0;">'
+        f'<span style="background:{SMI_BAND_COLORS[key]};width:26px;height:26px;'
+        f"border-radius:5px;display:inline-block;margin-right:10px;flex:0 0 auto;"
+        f'border:1px solid rgba(0,0,0,0.15);"></span>'
+        f'<span style="font-size:0.92rem;line-height:1.25;">'
+        f"<b>{SMI_BAND_LABELS[key]}</b><br>"
+        f'<span style="opacity:0.7;">SMI {lo:.2f}–{min(hi, 1.0):.2f} · '
+        f"{int(round(lo * 100))}.–{int(round(min(hi, 1.0) * 100))}. Perzentil</span>"
+        f"</span></div>"
+        for lo, hi, key in SMI_BANDS
+    )
+    st.markdown(legend_rows, unsafe_allow_html=True)
+    st.caption(
+        "Ordinale Skala zwischen 0 (sehr trocken) und 1 (sehr feucht) nach "
+        "[UFZ-Dürreklassifizierung](https://www.ufz.de/index.php?de=37937)."
+    )
 
 st.divider()
 

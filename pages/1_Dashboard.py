@@ -21,6 +21,7 @@ import plotly.graph_objects as go
 from data_sources import (
     DEFAULT_STOCKS,
     STOCKS,
+    construction_warning,
     URL_D86_CRNS,
     URL_LOCATIONS,
     URL_SWC_CRNS,
@@ -41,6 +42,8 @@ st.set_page_config(
     page_icon=":chart_with_upwards_trend:",
     layout="wide",
 )
+
+construction_warning()
 
 """
 # :material/query_stats: Bodenwassermonitor Brandenburg
