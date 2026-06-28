@@ -35,7 +35,9 @@ construction_warning()
 st.title("Single Stations")
 st.write(
     "Detaillierte Darstellung je Standort mit frei wählbaren Variablen und Zeitraum. "
-    "Dargestellte Daten beruhen auf Neutronenmessungen (CRNS), Bodenfeuchtemessungen (SMTs) und Modellsimulationen (SWAP). "
+    "Dargestellte Daten beruhen auf Neutronenmessungen (CRNS)"
+    # ", Bodenfeuchtemessungen (SMTs) " \
+    " und Modellsimulationen (SWAP). "
     "Die Eindringtiefe des CRNS hängt u.a. von der Bodenfeuchte selbst ab und ist daher dynamisch. Zur besseren Vergleichbarkeit mit dem CRNS-Signal sind die SWAP-Simulationsergebnisse ebenfalls entsprechend der Eindringtiefe des CRNS als tiefengewichteter Mittelwert dargestellt."
 )
 
@@ -148,7 +150,7 @@ with st.expander("Datenauswahl", expanded=True):
             "CRNS-basiert",
             options=CRNS_METRICS,
             format_func=lambda m: METRIC_LABELS[m],
-            default=["SWC(CRNS)", "SWC(NEPTOON_UTS)", "D86"],
+            default=["SWC(CRNS)", "D86"],
             selection_mode="multi",
             label_visibility="collapsed",
             key="metrics_crns",
@@ -159,23 +161,23 @@ with st.expander("Datenauswahl", expanded=True):
             "Modellbasiert",
             options=MODEL_METRICS,
             format_func=lambda m: METRIC_LABELS[m],
-            default=["SWC(SWAP)"],
+            default=[],
             selection_mode="multi",
             label_visibility="collapsed",
             key="metrics_model",
         )
-    with col_other:
-        st.markdown("**Weitere**")
-        other_sel = st.pills(
-            "Weitere",
-            options=OTHER_METRICS,
-            format_func=lambda m: METRIC_LABELS[m],
-            default=[],
-            selection_mode="multi",
-            label_visibility="collapsed",
-            key="metrics_other",
-        )
-    selected_metrics = list(crns_sel) + list(model_sel) + list(other_sel)
+    # with col_other:
+    #    st.markdown("**Weitere**")
+    #    other_sel = st.pills(
+    #        "Weitere",
+    #        options=OTHER_METRICS,
+    #        format_func=lambda m: METRIC_LABELS[m],
+    #        default=[],
+    #        selection_mode="multi",
+    #        label_visibility="collapsed",
+    #        key="metrics_other",
+    #    )
+    selected_metrics = list(crns_sel) + list(model_sel)  # list(other_sel)
 
     selected_smt_depths = []
     if "SWC(SMT)" in selected_metrics and smt_depths:
