@@ -9,41 +9,57 @@ from plotly.subplots import make_subplots
 import streamlit as st
 
 from data_sources import (
+    DEFAULT_SMI_DEPTH,
     DEFAULT_STOCKS,
     STOCKS,
     SMI_BANDS,
     SMI_BAND_COLORS,
     SMI_BAND_LABELS,
-    SMI_SOURCES,
+    SMI_DEPTHS,
+    SMI_POOL_HALFWIDTH_DAYS,
+    SMI_REFERENCE_PERIOD,
+    SMI_SWAP_DEPTH,
     SWAP_SM_DEPTHS,
     add_smi_bands,
     construction_warning,
+    load_smi,
+    load_smi_steps,
     load_time_series,
     selected_max_date,
     selected_min_date,
     smi_band,
+    smi_censoring,
 )
 
 st.set_page_config(
-    page_title="Dürreampel (SMI)",
+    page_title="Bodenfeuchteindex",
     page_icon=":material/water_drop:",
     layout="wide",
 )
 
 construction_warning()
 
-st.title("Dürreampel (SMI)")
+st.title("Klimatischer Bodenfeuchteindex")
 st.write(
-    "Bodenfeuchteindex (SMI) nach [UFZ-Dürreklassifizierung](https://www.ufz.de/index.php?de=37937). "
-    "Der SMI liegt zwischen 0 (sehr trocken) "
-    "und 1 (sehr feucht) und wird in Dürrekategorien eingeteilt. Die Kacheln zeigen den "
-    "aktuellen Status je Standort an. Darunter der zeitliche Verlauf mit hinterlegten "
-    "Dürrebändern. Optional kann die SWAP-Bodenfeuchte verschiedener Tiefen auf einer "
-    "zweiten Achse überlagert werden."
-    "Die Berechnung des SMI erfolgt angelehnt an Samaniego et al., 2013 und Zink et al., 2016 unter Nutzung des 14-tägigen Mitttels der Bodenfeuchte (Boeing et al., 2022). "
-    "Die aktuelle Bodenfeuchte wird in Relation zu den langjährigen SWAP Simulationen gesetzt und in die Dürreklassen eingeordnet, wobei die historische Verteilungen für jeden Tag im Jahr aus "
-    "dem 14-tägige Gleitende Mittel der Bodenfeuchte über die Referenzperiode von 1993 bis 2023 berechnet wird."
-    "Die Einordnung der aktuellen Bodenfeuchte basiert auf den akutellen SWAP Simulationen und wird analog zum UFZ Monitor klassifiziert (Kumar et al., 2013; Marx et al., o.J.)"
+    f"Der klimatische Bodenfeuchteindex ordnet die **aktuelle Bodenfeuchte** "
+    f"der SWAP-Simulationen in die historische Verteilung am selben Kalendertag ein. "
+    f"Er liegt zwischen 0 (sehr trocken) und 1 (sehr nass). "
+    f"Die Kacheln zeigen den aktuellen Status je Standort, während das darunter liegende Diagramm den zeitlichen Verlauf inklusive Dürre- und Nässebändern visualisiert. Optional kann die SWAP-Bodenfeuchte "
+    f"derselben Tiefe auf einer zweiten Achse überlagert werden. Die Klassifikation der trockenen Seite folgt dem Schema der [UFZ-Dürreklassifizierung](https://www.ufz.de/index.php?de=37937) "
+    f"(Kumar et al., 2013; Marx et al., o. J.); die nasse Seite ist mit denselben Schwellen gespiegelt (0,70/0,80/0,90/0,95/0,98). \n\n"
+    f"Die Grundlage der Berechnung bildet die **empirische Verteilungsfunktion (Weibull-Plotting-Positions)** "
+    f"der Referenzperiode {SMI_REFERENCE_PERIOD} aus der SWAP Simulation. Jeder Kalendertag hat seine eigene "
+    f"Verteilung, welche aus dem Pool aller Bodenfeuchtewerte im Fenster von "
+    f"±{SMI_POOL_HALFWIDTH_DAYS} Tagen um dieses Datum über den Referenzzeitraum gebildet wird. "
+    f"Die Datengrundlage unterscheidet sich somit von der des Dürreindexes des UFZ-Dürremonitor (Samaniego et al., 2013; Zink et al., 2016). "
+    f"Der Index beschreibt die empirische Unterschreitungswahrscheinlichkeit der aktuellen "
+    f"Bodenfeuchte und stellt eine Einordnung in die historische Verteilung dar. Die Tiefe der gemittelten Bodenfeuchte ist wählbar "
+    f"({', '.join(SMI_DEPTHS)})"
+    f".\n\n"
+    f"Eine empirische Verteilung ist nach unten und oben begrenzt: Liegt die aktuelle "
+    f"Bodenfeuchte auf oder unter der **untersten** bzw. auf oder über der **obersten "
+    f"Stufe** der Verteilungsfunktion, lässt sich der SMI nicht auflösen. Solche Standorte sind unter "
+    f"„Aktueller Status“ **gestrichelt umrandet** und zeigen, dass es sich extreme Bedingungen handelt."
 )
 
 # Stable colour-vision-deficiency-safe colour per station (CARTO "Safe").
@@ -61,11 +77,18 @@ def _text_on(hex_color: str) -> str:
     return "#000000" if luminance > 0.55 else "#ffffff"
 
 
-# --- Source selection --------------------------------------------------------
-source_name = st.selectbox("SMI-Quelle", options=list(SMI_SOURCES.keys()))
+# --- Depth selection ---------------------------------------------------------
+depth_label = st.segmented_control(
+    "Tiefe",
+    options=list(SMI_DEPTHS.keys()),
+    default=DEFAULT_SMI_DEPTH,
+    selection_mode="single",
+)
+depth_label = depth_label if depth_label in SMI_DEPTHS else DEFAULT_SMI_DEPTH
+depth_key = SMI_DEPTHS[depth_label]
 
 try:
-    smi = load_time_series(SMI_SOURCES[source_name])
+    smi = load_smi(depth_key)
 except Exception:
     st.warning(
         "SMI-Daten sind derzeit nicht verfügbar "
@@ -73,22 +96,50 @@ except Exception:
     )
     st.stop()
 
+try:
+    first_step, last_step = load_smi_steps(depth_key)
+except Exception:
+    # Fail soft: without the CDF bounds we simply cannot flag unresolvable SMI.
+    st.warning(
+        "Die Grenzen der empirischen Verteilung sind derzeit nicht verfügbar – "
+        "nicht auflösbare SMI-Werte können nicht markiert werden."
+    )
+    first_step = last_step = pd.DataFrame()
+
 available = [s for s in STOCKS if s in smi.columns]
 if not available:
     st.warning("Keine Standorte in den SMI-Daten gefunden.")
     st.stop()
 
+
+def _step_at(steps: pd.DataFrame, station, when):
+    """Step value for a station at a date, or None if unavailable."""
+    if steps.empty or station not in steps.columns or when is None:
+        return None
+    series = steps[station].dropna()
+    if when not in series.index:
+        return None
+    return float(series.loc[when])
+
+
 # --- Status badges: traffic light for every station, driest first ------------
 latest_value = {}
 latest_date = {}
+censoring = {}
 for s in available:
     series = smi[s].dropna()
     if series.empty:
         latest_value[s] = None
         latest_date[s] = None
-    else:
-        latest_value[s] = float(series.iloc[-1])
-        latest_date[s] = series.index[-1]
+        censoring[s] = None
+        continue
+    latest_value[s] = float(series.iloc[-1])
+    latest_date[s] = series.index[-1]
+    censoring[s] = smi_censoring(
+        latest_value[s],
+        _step_at(first_step, s, latest_date[s]),
+        _step_at(last_step, s, latest_date[s]),
+    )
 
 order = sorted(
     available,
@@ -100,17 +151,32 @@ order = sorted(
 
 st.subheader("Aktueller Status")
 
-grid_col, legend_col = st.columns([3, 1.5], gap="large")
+grid_col, legend_col = st.columns([3, 2.2], gap="medium")
 
 with grid_col:
-    PER_ROW = 4
+    PER_ROW = 3
     for row_start in range(0, len(order), PER_ROW):
         cols = st.columns(PER_ROW, gap="medium")
         for j, station in enumerate(order[row_start : row_start + PER_ROW]):
             value = latest_value[station]
             _, label, color = smi_band(value)
             text_color = _text_on(color)
-            value_str = "–" if value is None else f"{value:.2f}"
+            censor = censoring[station]
+            if value is None:
+                value_str = "–"
+            elif censor == "low":
+                value_str = f"≤ {value:.2f}"
+            elif censor == "high":
+                value_str = f"≥ {value:.2f}"
+            else:
+                value_str = f"{value:.2f}"
+            # Keep the border in both cases so tiles stay the same size.
+            border = f"3px dashed {text_color}" if censor else "3px solid transparent"
+            hint = (
+                " title='SMI nicht auflösbar: Bodenfeuchte am Rand der empirischen Verteilung'"
+                if censor
+                else ""
+            )
             date_str = (
                 ""
                 if latest_date[station] is None
@@ -118,8 +184,8 @@ with grid_col:
             )
             cols[j].markdown(
                 f"""
-<div style="background:{color};color:{text_color};border-radius:10px;margin:4px 0;
-            padding:10px 6px;text-align:center;line-height:1.25;">
+<div{hint} style="background:{color};color:{text_color};border-radius:10px;margin:4px 0;
+            padding:10px 6px;text-align:center;line-height:1.25;border:{border};">
   <div style="font-weight:700;font-size:1.05rem;">{station}</div>
   <div style="font-size:1.3rem;font-weight:700;">{value_str}</div>
   <div style="font-size:0.78rem;">{label}</div>
@@ -129,10 +195,9 @@ with grid_col:
                 unsafe_allow_html=True,
             )
 
-with legend_col:
-    st.markdown("**Klassifizierung**")
-    # Legend rows, driest -> wettest, with SMI ranges and percentile classes.
-    legend_rows = "".join(
+def _legend_rows(bands):
+    """Legend rows, driest -> wettest, with SMI ranges and percentile classes."""
+    return "".join(
         f'<div style="display:flex;align-items:center;margin:8px 0;">'
         f'<span style="background:{SMI_BAND_COLORS[key]};width:26px;height:26px;'
         f"border-radius:5px;display:inline-block;margin-right:10px;flex:0 0 auto;"
@@ -142,12 +207,34 @@ with legend_col:
         f'<span style="opacity:0.7;">SMI {lo:.2f}–{min(hi, 1.0):.2f} · '
         f"{int(round(lo * 100))}.–{int(round(min(hi, 1.0) * 100))}. Perzentil</span>"
         f"</span></div>"
-        for lo, hi, key in SMI_BANDS
+        for lo, hi, key in bands
     )
-    st.markdown(legend_rows, unsafe_allow_html=True)
+
+
+with legend_col:
+    st.markdown("**Klassifizierung**")
+    # Dry half (incl. the normal class) left, wet half right.
+    dry_bands = [b for b in SMI_BANDS if b[0] < 0.70]
+    wet_bands = [b for b in SMI_BANDS if b[0] >= 0.70]
+    dry_col, wet_col = st.columns(2, gap="medium")
+    dry_col.markdown(_legend_rows(dry_bands), unsafe_allow_html=True)
+    wet_col.markdown(_legend_rows(wet_bands), unsafe_allow_html=True)
+    st.markdown(
+        '<div style="display:flex;align-items:center;margin:14px 0 4px 0;">'
+        '<span style="width:26px;height:26px;border-radius:5px;display:inline-block;'
+        "margin-right:10px;flex:0 0 auto;border:3px dashed currentColor;"
+        'opacity:0.8;"></span>'
+        '<span style="font-size:0.92rem;line-height:1.25;">'
+        "<b>SMI nicht auflösbar</b><br>"
+        '<span style="opacity:0.7;">Bodenfeuchte auf oder jenseits der untersten/'
+        "obersten Stufe der empirischen Verteilung; der Wert ist nur eine "
+        "Ober- (≤) bzw. Untergrenze (≥).</span></span></div>",
+        unsafe_allow_html=True,
+    )
     st.caption(
-        "Ordinale Skala zwischen 0 (sehr trocken) und 1 (sehr feucht) nach "
-        "[UFZ-Dürreklassifizierung](https://www.ufz.de/index.php?de=37937)."
+        "Ordinale Skala zwischen 0 (sehr trocken) und 1 (sehr nass). Dürreklassen nach "
+        "[UFZ-Dürreklassifizierung](https://www.ufz.de/index.php?de=37937), "
+        "Nässeklassen an denselben Schwellen gespiegelt."
     )
 
 st.divider()
@@ -178,11 +265,11 @@ with control_cols[0]:
         selection_mode="single",
     )
 with control_cols[1]:
-    swap_depths = st.multiselect(
-        "SWAP-Bodenfeuchte",
-        options=list(SWAP_SM_DEPTHS.keys()),
-        default=[],
-        placeholder="Wähle Tiefen",
+    # Only the depth the SMI itself is derived from can be overlaid.
+    swap_label = SMI_SWAP_DEPTH[depth_key]
+    show_swap = st.checkbox(
+        f"SWAP-Bodenfeuchte ({swap_label}) überlagern",
+        value=False,
     )
 
 if not sel_stations:
@@ -199,7 +286,7 @@ else:
     start = max(pd.Timestamp(min_date), today - timedelta(days=horizon_days))
 end = pd.Timestamp(selected_max_date(smi, sel_stations))
 
-has_secondary = bool(swap_depths)
+has_secondary = bool(show_swap)
 fig = make_subplots(specs=[[{"secondary_y": has_secondary}]])
 add_smi_bands(fig)
 
@@ -219,13 +306,13 @@ for station in sel_stations:
         secondary_y=False,
     )
 
-# Optional SWAP soil-moisture overlays on the secondary axis.
-for depth_label in swap_depths:
+# Optional SWAP soil-moisture overlay (same depth as the SMI) on the secondary axis.
+if show_swap:
     try:
-        swap_sm = load_time_series(SWAP_SM_DEPTHS[depth_label])
+        swap_sm = load_time_series(SWAP_SM_DEPTHS[swap_label])
     except Exception:
-        st.warning(f"SWAP-Bodenfeuchte ({depth_label}) nicht verfügbar.")
-        continue
+        swap_sm = pd.DataFrame()
+        st.warning(f"SWAP-Bodenfeuchte ({swap_label}) nicht verfügbar.")
     for station in sel_stations:
         if station not in swap_sm.columns:
             continue
@@ -237,7 +324,7 @@ for depth_label in swap_depths:
                 x=series.index,
                 y=series,
                 mode="lines",
-                name=f"{station} · SWAP {depth_label}",
+                name=f"{station} · SWAP {swap_label}",
                 legendgroup=station,
                 line=dict(color=STATION_COLORS.get(station, "#444444"), dash="dot"),
                 opacity=0.8,
@@ -245,7 +332,7 @@ for depth_label in swap_depths:
             secondary_y=True,
         )
 
-fig.update_yaxes(title_text="SMI (0–1)", range=[0, 1], secondary_y=False)
+fig.update_yaxes(title_text=f"SMI {depth_label} (0–1)", range=[0, 1], secondary_y=False)
 if has_secondary:
     fig.update_yaxes(title_text="SWAP-Bodenfeuchte (m³/m³)", secondary_y=True)
 fig.update_layout(
@@ -261,7 +348,7 @@ with st.expander("Quellen", expanded=False):
         """
         - Boeing, F., Rakovec, O., Kumar, R., Samaniego, L., Schrön, M., Hildebrandt, A., Rebmann, C., Thober, S., Müller, S., Zacharias, S., Bogena, H., Schneider, K., Kiese, R., Attinger, S., & Marx, A. (2022). High-resolution drought simulations and comparison to soil moisture observations in Germany. Hydrology and Earth System Sciences, 26(19), 5137–5161. https://doi.org/10.5194/hess-26-5137-2022
         - Kumar, R., Samaniego, L., & Attinger, S. (2013). Implications of distributed hydrologic model parameterization on water fluxes at multiple scales and locations. Water Resources Research, 49(1), 360–379. https://doi.org/10.1029/2012WR012195
-        - Marx, A., Samaniego, L., Kumar, R., Thober, S., Mai, J., & Zink, M. (o. J.). Der Dürremonitor – Aktuelle Information zur Bodenfeuchte in Deutschland.
+        - Marx, A., Samaniego, L., Kumar, R., Thober, S., Mai, J., & Zink, M. (o. J.). Der Dürremonitor – Aktuelle Information zur Bodenfeuchte in Deutschland.
         - Samaniego, L., Kumar, R., & Zink, M. (2013). Implications of Parameter Uncertainty on Soil Moisture Drought Analysis in Germany. Journal of Hydrometeorology, 14(1), 47–68. https://doi.org/10.1175/JHM-D-12-075.1
         - Zink, M., Samaniego, L., Kumar, R., Thober, S., Mai, J., Schäfer, D., & Marx, A. (2016). The German drought monitor. Environmental Research Letters, 11(7), 074002. https://doi.org/10.1088/1748-9326/11/7/074002
 

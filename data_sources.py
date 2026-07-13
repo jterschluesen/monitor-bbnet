@@ -43,23 +43,18 @@ URL_SWC_NEPTOON_UTS = f"{BASE_URL}/swc-neptoon_UTS.txt"
 URL_SWC_NEPTOON_DES_old = f"{BASE_URL}/swc-neptoon_DES_oldpreproc.txt"
 URL_SWC_NEPTOON_UTS_old = f"{BASE_URL}/swc-neptoon_UTS_oldpreproc.txt"
 URL_SNOW_FLAGS = f"{BASE_URL}/snow-flags.csv"
-URL_SMI_UFZ = f"{BASE_URL}/smi-from-swap-whole.txt"
 URL_SWAP_SM_0_30 = f"{BASE_URL}/swc-from-swap-mean-0_30.txt"
 URL_SWAP_SM_0_100 = f"{BASE_URL}/swc-from-swap-mean-0_100.txt"
-URL_SWAP_SM_100_200 = f"{BASE_URL}/swc-from-swap-mean-100_200.txt"
+URL_SWAP_SM_0_200 = f"{BASE_URL}/swc-from-swap-mean-0_200.txt"
 # Per-station daily water balance + the 1994-2024 day-of-year normals.
 
 URL_BALANCE_NORMAL_DIR = "https://b2drop.eudat.eu//public.php/dav/files/7dHbNH26QT2nCef"
 URL_WATER_BALANCE = f"{URL_BALANCE_NORMAL_DIR}/{{station}}.csv"
-# Drought-index sources for the SMI page. Extend with one entry per new source.
-SMI_SOURCES = {
-    "SMI (14 Tage)": URL_SMI_UFZ,
-}
 # SWAP soil-moisture depth averages overlaid on the SMI page's secondary axis.
 SWAP_SM_DEPTHS = {
     "0–30 cm": URL_SWAP_SM_0_30,
-    "0–100 cm (1 m)": URL_SWAP_SM_0_100,
-    "100–200 cm (2 m)": URL_SWAP_SM_100_200,
+    "0–1 m": URL_SWAP_SM_0_100,
+    "0–2 m": URL_SWAP_SM_0_200,
 }
 
 STOCKS = [
@@ -318,15 +313,99 @@ def add_calibration_marker(
     return fig
 
 
-# --- Soil-Moisture-Index drought bands (US Drought Monitor style) -------------
+# --- Soil-Moisture-Index (empirical CDF) -------------------------------------
+# The SMI is the empirical non-exceedance probability of the actual (unsmoothed)
+# SWAP soil moisture within the reference distribution. Every calendar day has its
+# own CDF, pooled from a +/-7 d window around that day over all reference years
+# (Weibull plotting positions).
+#
+# Because the CDF is empirical it is bounded: the ``*_first_step`` / ``*_last_step``
+# files hold the lowest / highest resolvable SMI per station and day. Soil moisture
+# at or beyond those steps only yields a bound, not an exact SMI (see
+# ``smi_censoring``). ``*_lt`` is the full history, ``smi_<depth>.txt`` the recent
+# part of it.
+SMI_REFERENCE_PERIOD = "1994–2024"
+SMI_POOL_HALFWIDTH_DAYS = 7
+
+SMI_DEPTHS = {
+    "0–30 cm": "0_30cm",
+    "0–100 cm": "0_100cm",
+    "0–200 cm": "0_200cm",
+}
+DEFAULT_SMI_DEPTH = "0–100 cm"
+
+# The SWAP soil moisture an SMI depth is derived from -> keys of SWAP_SM_DEPTHS.
+# Only that depth may be overlaid on the SMI page; the SMI would otherwise be
+# compared against soil moisture from a different profile.
+SMI_SWAP_DEPTH = {
+    "0_30cm": "0–30 cm",
+    "0_100cm": "0–1 m",
+    "0_200cm": "0–2 m",
+}
+
+# Values are stored with 4 decimals, so an exact step hit compares equal.
+SMI_STEP_TOL = 1e-6
+
+
+def _smi_url(depth_key: str, suffix: str = "") -> str:
+    return f"{BASE_URL}/smi_{depth_key}{suffix}.txt"
+
+
+@st.cache_data(ttl=12 * 3600)
+def load_smi(depth_key: str) -> pd.DataFrame:
+    """Full SMI history for one depth."""
+    return load_time_series(_smi_url(depth_key, "_lt"))
+
+
+@st.cache_data(ttl=12 * 3600)
+def load_smi_steps(depth_key: str):
+    """(first_step, last_step): lowest / highest resolvable SMI per station and day."""
+    return (
+        load_time_series(_smi_url(depth_key, "_first_step")),
+        load_time_series(_smi_url(depth_key, "_last_step")),
+    )
+
+
+def smi_censoring(value, first_step=None, last_step=None):
+    """Whether an SMI value sits on the empirical CDF's lowest / highest step.
+
+    Returns ``"low"`` (soil moisture at or below the driest reference sample, so the
+    SMI is only an upper bound), ``"high"`` (only a lower bound), or ``None`` when
+    the SMI resolves normally.
+    """
+    if value is None or pd.isna(value):
+        return None
+    if (
+        first_step is not None
+        and not pd.isna(first_step)
+        and value <= first_step + SMI_STEP_TOL
+    ):
+        return "low"
+    if (
+        last_step is not None
+        and not pd.isna(last_step)
+        and value >= last_step - SMI_STEP_TOL
+    ):
+        return "high"
+    return None
+
+
+# --- Soil-Moisture-Index bands (US Drought Monitor style, mirrored to the wet end)
 # SMI in [0, 1]; lower = drier. (lo, hi, key); hi is exclusive except the top band.
+# The wet classes mirror the drought thresholds (0.02/0.05/0.10/0.20/0.30) around
+# the middle, so 0.70-1.00 is graded the same way 0.00-0.30 is.
 SMI_BANDS = [
     (0.00, 0.02, "exceptional"),
     (0.02, 0.05, "extreme"),
     (0.05, 0.10, "severe"),
     (0.10, 0.20, "moderate"),
     (0.20, 0.30, "abnormally_dry"),
-    (0.30, 1.01, "no_drought"),
+    (0.30, 0.70, "normal"),
+    (0.70, 0.80, "abnormally_wet"),
+    (0.80, 0.90, "moderate_wet"),
+    (0.90, 0.95, "severe_wet"),
+    (0.95, 0.98, "extreme_wet"),
+    (0.98, 1.01, "exceptional_wet"),
 ]
 SMI_BAND_LABELS = {
     "exceptional": "außergewöhnliche Dürre",
@@ -334,17 +413,27 @@ SMI_BAND_LABELS = {
     "severe": "schwere Dürre",
     "moderate": "moderate Dürre",
     "abnormally_dry": "ungewöhnlich trocken",
-    "no_drought": "keine Dürre",
+    "normal": "normal",
+    "abnormally_wet": "ungewöhnlich nass",
+    "moderate_wet": "moderate Nässe",
+    "severe_wet": "starke Nässe",
+    "extreme_wet": "extreme Nässe",
+    "exceptional_wet": "außergewöhnliche Nässe",
 }
-# CVD-safe RdYlBu-derived sequence (ColorBrewer flags RdYlBu colour-blind-safe):
-# dark red = worst drought, blue = wettest. Brightness also varies monotonically.
+# ColorBrewer RdYlBu-11 (flagged colour-blind-safe): dark red = driest, pale yellow
+# = normal, dark blue = wettest. Brightness varies monotonically towards both ends.
 SMI_BAND_COLORS = {
     "exceptional": "#7b0000",
     "extreme": "#d7191c",
     "severe": "#fdae61",
     "moderate": "#fee090",
-    "abnormally_dry": "#abd9e9",
-    "no_drought": "#2c7bb6",
+    "abnormally_dry": "#fff8e6",
+    "normal": "#dfdfdf",
+    "abnormally_wet": "#e0f3f8",
+    "moderate_wet": "#abd9e9",
+    "severe_wet": "#74add1",
+    "extreme_wet": "#4575b4",
+    "exceptional_wet": "#313695",
 }
 SMI_NA_COLOR = "#cccccc"
 

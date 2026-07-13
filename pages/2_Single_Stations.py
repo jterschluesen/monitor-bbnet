@@ -6,6 +6,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from data_sources import (
     STOCKS,
+    SWAP_SM_DEPTHS,
     construction_warning,
     URL_D86_CRNS,
     URL_LOCATIONS,
@@ -32,7 +33,7 @@ st.set_page_config(
 
 construction_warning()
 
-st.title("Single Stations")
+st.title("Messreihen einzelner Standorte")
 st.write(
     "Detaillierte Darstellung je Standort mit frei wählbaren Variablen und Zeitraum. "
     "Dargestellte Daten beruhen auf Neutronenmessungen (CRNS), Bodenfeuchtemessungen (SMTs) und Modellsimulationen (SWAP). "
@@ -47,7 +48,17 @@ COLOR_NEPTOON_DES = "#56B4E9"  # sky blue
 COLOR_NEPTOON_UTS = "#0072B2"  # blue
 COLOR_D86 = "#009E73"  # bluish green - kept distinct from the SWC blues
 SMT_GRAY_SCALE = ["#1F1F1F", "#4D4D4D", "#737373", "#A6A6A6", "#D0D0D0"]
+# Purple ramp (light = shallow, dark = deep) for the fixed-depth SWAP means; kept
+# off the orange/blue/green hues so they read as their own family.
+SWAP_DEPTH_COLORS = {"0–30 cm": "#9E9AC8", "0–1 m": "#6A51A3", "0–2 m": "#3F007D"}
 TRACE_ALPHA = 0.8
+
+# The SWAP runs reach back to 1990, the CRNS record starts in 2021. Clip the model
+# series so the long simulation history does not stretch the station plots.
+SWAP_START = pd.Timestamp("2024-01-01")
+
+# One metric per fixed SWAP depth mean, next to the CRNS-depth-weighted SWC(SWAP).
+SWAP_DEPTH_METRICS = {f"SWC(SWAP {depth})": depth for depth in SWAP_SM_DEPTHS}
 
 # Internal metric key -> readable label (legend + selector). Grouped by source.
 METRIC_LABELS = {
@@ -56,8 +67,9 @@ METRIC_LABELS = {
     "SWC(NEPTOON_DES)": "SWC (CRNS, Desilet)",
     "SWC(NEPTOON_UTS)": "SWC (CRNS, UTS)",
     "D86": "D86 (CRNS)",
-    "SWC(SWAP)": "SWC (SWAP)",
+    "SWC(SWAP)": "SWC (SWAP, weighted)",
     "SWC(SMT)": "SWC (SMT)",
+    **{metric: f"SWC (SWAP, {depth})" for metric, depth in SWAP_DEPTH_METRICS.items()},
 }
 
 CRNS_METRICS = [
@@ -67,7 +79,7 @@ CRNS_METRICS = [
     "SWC(NEPTOON_UTS)",
     "D86",
 ]
-MODEL_METRICS = ["SWC(SWAP)"]
+MODEL_METRICS = ["SWC(SWAP)"] + list(SWAP_DEPTH_METRICS)
 OTHER_METRICS = ["SWC(SMT)"]
 
 
@@ -113,7 +125,7 @@ def rename_smt_columns(df: pd.DataFrame) -> pd.DataFrame:
 
 crns_full = load_time_series(URL_SWC_CRNS)
 crns_full_old = load_time_series(URL_SWC_CRNS_old)
-swap_full = load_time_series(URL_SWC_SWAP)
+swap_full = load_time_series(URL_SWC_SWAP).loc[SWAP_START:]
 d86_full = load_time_series(URL_D86_CRNS)
 locs = load_locations(URL_LOCATIONS)
 neptoon_des_full = load_time_series(URL_SWC_NEPTOON_DES)
@@ -202,6 +214,18 @@ if "SWC(SMT)" in selected_metrics:
 
 smt_color_map = _smt_color_map(selected_smt_depths)
 
+# Fixed-depth SWAP means are fetched on demand; a missing file only drops its trace.
+swap_depth_frames = {}
+for metric, depth in SWAP_DEPTH_METRICS.items():
+    if metric not in selected_metrics:
+        continue
+    try:
+        swap_depth_frames[metric] = load_time_series(SWAP_SM_DEPTHS[depth]).loc[
+            SWAP_START:
+        ]
+    except Exception:
+        st.warning(f"SWAP-Bodenfeuchte ({depth}) nicht verfügbar.")
+
 metric_frames = {}
 # reindex (not direct selection) so stations missing from a source - e.g. WUS,
 # which has no SWAP run - yield NaN columns instead of a KeyError.
@@ -230,6 +254,8 @@ if "SWC(NEPTOON_UTS)" in selected_metrics:
     metric_frames["SWC(NEPTOON_UTS)"] = neptoon_uts_full.reindex(
         columns=selected_stations
     )
+for metric, frame in swap_depth_frames.items():
+    metric_frames[metric] = frame.reindex(columns=selected_stations)
 
 if not metric_frames:
     st.warning("Keine Daten fuer die aktuelle Variablenauswahl gefunden.")
@@ -275,6 +301,9 @@ for i, station in enumerate(selected_stations):
         station_frames.append(neptoon_des_full[[station]])
     if "SWC(NEPTOON_UTS)" in selected_metrics and station in neptoon_uts_full.columns:
         station_frames.append(neptoon_uts_full[[station]])
+    for frame in swap_depth_frames.values():
+        if station in frame.columns:
+            station_frames.append(frame[[station]])
 
     if not station_frames:
         continue
@@ -328,6 +357,25 @@ for i, station in enumerate(selected_stations):
                 mode="lines",
                 name=METRIC_LABELS["SWC(SWAP)"],
                 line=dict(color=COLOR_SWAP),
+                opacity=TRACE_ALPHA,
+            ),
+            secondary_y=False,
+        )
+
+    for metric, frame in swap_depth_frames.items():
+        depth_series = _station_series(frame, station, station_start, station_end)
+        if depth_series is None or depth_series.dropna().empty:
+            continue
+        fig.add_trace(
+            go.Scatter(
+                x=depth_series.index,
+                y=depth_series,
+                mode="lines",
+                name=METRIC_LABELS[metric],
+                line=dict(
+                    color=SWAP_DEPTH_COLORS.get(SWAP_DEPTH_METRICS[metric], "#6A51A3"),
+                    dash="dash",
+                ),
                 opacity=TRACE_ALPHA,
             ),
             secondary_y=False,
