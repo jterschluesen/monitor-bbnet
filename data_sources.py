@@ -344,7 +344,7 @@ SMI_SWAP_DEPTH = {
 }
 
 # Values are stored with 4 decimals, so an exact step hit compares equal.
-SMI_STEP_TOL = 1e-6
+SMI_STEP_TOL = 1e-8
 
 
 def _smi_url(depth_key: str, suffix: str = "") -> str:
@@ -471,5 +471,3 @@ def add_smi_bands(fig, *, opacity=0.18):
             layer="below",
         )
     return fig
-
-
