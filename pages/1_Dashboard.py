@@ -38,7 +38,7 @@ from data_sources import (
 )
 
 st.set_page_config(
-    page_title="Soil water viewer",
+    page_title="Bodenwassermonitor Brandenburg",
     page_icon=":chart_with_upwards_trend:",
     layout="wide",
 )
@@ -49,7 +49,7 @@ construction_warning()
 # :material/query_stats: Bodenwassermonitor Brandenburg
 
 Diese Seite dient der Darstellung vorläufiger Forschungsergebnisse zu den Themen Bodenfeuchte-Monitoring und Grundwasserneubildung in Brandenburg. 
-Dazu kooperiert die Universität Potsdam mit dem Land Brandenburg, dem Helmholtz-Zentrum für Umweltforschung und dem Climate Change Center Berlin-Brandenburg, unter anderem in dem vom Land Brandenburg geförderten Projekt “Einfluss des Klimawandels auf die Grundwasserneubildung in Brandenburg: Anpassungsbedarfe und Hebelpunkte” und "Klimafolgen- und Anpoassung Brandenburg: Untersuchungen zum Landschaftswasserhaushalt und Starkregenrisikomanagement".
+Dazu kooperiert die Universität Potsdam mit dem Land Brandenburg, dem Helmholtz-Zentrum für Umweltforschung und dem Climate Change Center Berlin-Brandenburg, unter anderem in dem vom Land Brandenburg geförderten Projekt “Einfluss des Klimawandels auf die Grundwasserneubildung in Brandenburg: Anpassungsbedarfe und Hebelpunkte” und "Klimafolgen- und Anpassung Brandenburg: Untersuchungen zum Landschaftswasserhaushalt und Starkregenrisikomanagement".
 Die dargestellten Daten beruhen auf Neutronenmessungen und Modellsimulationen (SWAP). 
 
 """

@@ -17,15 +17,15 @@
 import streamlit as st
 
 pages = [
-    st.Page("pages/1_Dashboard.py", title="Dashboard", icon=":material/home:"),
+    st.Page("pages/1_Dashboard.py", title="Übersicht", icon=":material/home:"),
     st.Page(
         "pages/2_Single_Stations.py",
-        title="Single Stations",
+        title="Einzelstandorte",
         icon=":material/monitoring:",
     ),
     st.Page(
         "pages/3_Drought_SMI.py",
-        title="Dürreampel (SMI)",
+        title="Bodenfeuchteindex",
         icon=":material/water_drop:",
     ),
     
