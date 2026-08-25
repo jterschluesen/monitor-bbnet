@@ -18,23 +18,46 @@ import pandas as pd
 from datetime import timedelta
 import plotly.express as px
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 from data_sources import (
     DEFAULT_STOCKS,
+    DEFAULT_UNIT,
+    FULL_RANGE_LABEL,
+    HORIZON_MAP,
     STOCKS,
+    UNITS,
+    URL_SWAP_SM_0_30,
     construction_warning,
     URL_D86_CRNS,
     URL_LOCATIONS,
     URL_SWC_CRNS,
     URL_SWC_SWAP,
     URL_SNOW_FLAGS,
+    PLOT_CONFIG,
+    add_range_slider,
     add_snow_shading,
+    get_download_unit,
+    get_mask_snow,
+    get_shared_window,
+    glossary_expander,
+    init_shared_window,
     load_locations,
     load_snow_flags,
     load_time_series,
+    maybe_mask_snow,
+    moisture_label,
     normalize_stocks,
     selected_max_date,
     selected_min_date,
-    snow_periods,
+    set_download_unit,
+    set_shared_stations,
+    snow_mask_toggle,
+    set_shared_window,
+    station_label,
+    union_snow_periods,
+    station_labeller,
+    to_download_unit,
+    to_plot_unit,
 )
 
 st.set_page_config(
@@ -45,18 +68,16 @@ st.set_page_config(
 
 construction_warning()
 
-"""
-# :material/query_stats: Bodenwassermonitor Brandenburg
-
-Diese Seite dient der Darstellung vorläufiger Forschungsergebnisse zu den Themen Bodenfeuchte-Monitoring und Grundwasserneubildung in Brandenburg. 
-Dazu kooperiert die Universität Potsdam mit dem Land Brandenburg, dem Helmholtz-Zentrum für Umweltforschung und dem Climate Change Center Berlin-Brandenburg, unter anderem in dem vom Land Brandenburg geförderten Projekt “Einfluss des Klimawandels auf die Grundwasserneubildung in Brandenburg: Anpassungsbedarfe und Hebelpunkte” und "Klimafolgen- und Anpassung Brandenburg: Untersuchungen zum Landschaftswasserhaushalt und Starkregenrisikomanagement".
-Die dargestellten Daten beruhen auf Neutronenmessungen und Modellsimulationen (SWAP). 
-
-"""
-
-""  # Add some space.
-
-top_row = st.columns([1, 2])
+st.title("Bodenwassermonitor Brandenburg")
+st.write(
+    "Der Bodenwassermonitor Brandenburg dient der Darstellung von gemessenen und simulierten Bodenfeuchtedaten, verschiedener Standorte in Brandenburg, sowir daraus abgeleiteter Ergebnisse zu den Themen Bodenfeuchte-Monitoring und Grundwasserneubildung in Brandenburg. "
+    'Die Universität Potsdam kooperiert dazu mit dem Land Brandenburg, dem Helmholtz-Zentrum für Umweltforschung und dem Climate Change Center Berlin-Brandenburg, unter anderem in den vom Land Brandenburg geförderten Projekten “Einfluss des Klimawandels auf die Grundwasserneubildung in Brandenburg: Anpassungsbedarfe und Hebelpunkte” und "Klimafolgen- und Anpassung Brandenburg: Untersuchungen zum Landschaftswasserhaushalt und Starkregenrisikomanagement".'
+)
+st.write(
+    "Die dargestellten Daten beruhen auf zwei Grundlagen: der Messung der Bodenfeuchte mit kosmischen Neutronensensoren, welche die Beziehung zwischen der Menge der kosmischen Neutronen zur Bodenfeuchte ausnutzt (Messung via CRNS, siehe 'Abkürzungen und Erklärungen') und Modellergebnissen aus dem Bodenwasserhaushaltsmodell [SWAP](https://www.swap.alterra.nl/) (Boden-Wasser-Atmosphäre-Pflanze). Die Daten werden in der Einheit Volumenprozent (Vol.-%) dargestellt. "
+    "Die Daten beschreiben die Bodenfeuchte in der oberen Bodenschicht. Da die Eindringtiefe des CRNS-Signals selbst von der Bodenfeuchte abhängt, ist die Tiefe, über die die Messung aggregiert wird, variable. Eine Standortbasierte Darstellung der Messungen via CRNS ist auf der Seite Messstationen verfügbar."
+    "Derzeit stehen die Messdaten des CRNS-Netzwerks (Cosmic Ray Neutron Sensing) von 12 Standorten in Brandenburg zur Verfügung, welche von der Universität Potsdam, dem Helmholtz-Zentrum für Umweltforschung (UFZ) sowie dem Land Brandenburg (LGBR) betrieben werden. Die Messungen dienen zur Kallibrierung des Bodenwasserhaushaltsmodell SWAP (Boden-Wasser-Atmosphäre-Pflanze) mit welchem historische Bodenfeuchtedaten für die Standorte in Brandenburg simuliert werden können. "
+)
 
 
 def stocks_to_str(stocks):
@@ -78,11 +99,13 @@ def update_query_param():
         st.query_params["stocks"] = stocks_to_str(st.session_state.tickers_input)
     else:
         st.query_params.pop("stocks", None)
+    set_shared_stations(st.session_state.tickers_input)
 
 
 def mark_main_horizon_custom():
-    st.session_state.selected_horizon = "Custom"
-    st.session_state.applied_horizon = "Custom"
+    # Typing a start/end date means "own period": no horizon pill stays selected.
+    st.session_state.selected_horizon = None
+    st.session_state.applied_horizon = None
 
 
 def stations_from_map_points(points):
@@ -151,62 +174,47 @@ def sync_stocks_from_map_selection():
 sync_stocks_from_map_selection()
 
 
-top_left_cell = top_row[0].container(
-    border=True, height="stretch", vertical_alignment="center"
-)
+# One heading over both columns: map and stations on the left, the time series with
+# its controls on the right.
+st.markdown("### Standortübersicht der Zeitreihen")
 
-map_cell = top_row[1].container(
-    border=True, height="stretch", vertical_alignment="center"
-)
+map_col, plot_col = st.columns([1.2, 2.5], gap="medium")
+map_cell = map_col.container(border=True, height="stretch")
+plot_cell = plot_col.container(border=True, height="stretch")
+with plot_cell:
+    # Created first so the chart stays above; the widgets below are filled in early
+    # because the figure needs their values.
+    main_plot_cell = st.container()
+    controls_cell = st.container()
 
-main_plot_cell = st.container(border=True)
+SOURCE_LABELS = {
+    "CRNS": "Messung via CRNS (tiefengewichtet)",
+    "SWAP": "Modellierte Bodenfeuchte 0-30cm",
+}
 
-with top_left_cell:
-    st.markdown("### Datenauswahl")
-
-    if "swc_source" not in st.session_state:
-        st.session_state.swc_source = "CRNS"
+with controls_cell:
+    if "swc_sources" not in st.session_state:
+        st.session_state.swc_sources = ["CRNS"]
     if "map_style" not in st.session_state:
         st.session_state.map_style = "OpenStreetMap"
 
-    st.radio(
-        "SWC für Übersichtsgrafik",
-        options=["CRNS", "SWAP"],
-        key="swc_source",
-        horizontal=True,
-    )
+    selection_cols = st.columns([3, 1], gap="medium")
 
-    st.selectbox(
-        "Hintergrundkarte",
-        options=[
-            "OpenStreetMap",
-            "Carto Positron",
-            "Carto Dark",
-            "Google Satellite",
-        ],
-        key="map_style",
-    )
+    with selection_cols[0]:
+        st.pills(
+            "Datengrundlage",
+            options=list(SOURCE_LABELS),
+            format_func=lambda source: SOURCE_LABELS[source],
+            key="swc_sources",
+            selection_mode="multi",
+        )
 
-    # Selectbox for stock tickers
-    st.multiselect(
-        "Standorte",
-        options=STOCKS,
-        key="tickers_input",
-        placeholder="Wähle mindestens einen Standort",
-        on_change=update_query_param,
-    )
+    with selection_cols[1]:
+        # The station list itself lives next to the map in the left column.
+        snow_mask_toggle()
 
-# Time horizon selector
-horizon_map = {
-    "Maximum": None,
-    "1 Monat": 31,
-    "3 Monate": 3 * 31,
-    "6 Monate": 6 * 31,
-    "1 Jahr": 365,
-    "2 Jahre": 2 * 365,
-    "3 Jahre": 3 * 365,
-    "Custom": "custom",
-}
+# Time horizon selector; shared with the "Messstationen" page.
+horizon_map = HORIZON_MAP
 
 tickers = normalize_stocks(st.session_state.tickers_input)
 if tickers != st.session_state.tickers_input:
@@ -214,29 +222,44 @@ if tickers != st.session_state.tickers_input:
     update_query_param()
 
 if not tickers:
-    top_left_cell.info("Wähle mindestens einen Standort.", icon=":material/info:")
+    map_cell.info("Wähle mindestens einen Standort.", icon=":material/info:")
 
 
 # data = load_data(dtimes, STOCKS, rho=0.7, seed=42)
 data2_full = load_time_series(URL_SWC_CRNS)
-sim2_full = load_time_series(URL_SWC_SWAP)
+sim2_full = load_time_series(URL_SWAP_SM_0_30)  # use 0-30cm instead of weighted
 d862_full = load_time_series(URL_D86_CRNS)
-snow_phase_periods = snow_periods(load_snow_flags(URL_SNOW_FLAGS))
+snow_flags = load_snow_flags(URL_SNOW_FLAGS)
+# Shade exactly the phases of the stations on screen, so the band matches the gaps
+# that masking leaves in the curves.
+snow_phase_periods = union_snow_periods(snow_flags, tickers)
+# Snow biases the neutron count: the plots show gaps there, the download keeps the
+# unmasked source data.
+crns_plot_full = maybe_mask_snow(data2_full, snow_flags)
 # https://b2drop.eudat.eu/s/yr5d6i72cCacYpH/swc-from-swap.txt
 
 
+# The overview window follows the CRNS record only: the model runs reach back to
+# 1990 and would otherwise stretch the axis and the navigator far beyond the
+# measurements.
 min_date = selected_min_date(data2_full, tickers)
 max_date = selected_max_date(data2_full, tickers)
 today_date = pd.Timestamp.today().date()
+end_bound = min(max_date, today_date)
+crns_span = (pd.to_datetime(min_date), pd.to_datetime(end_bound))
+
+# Seed the page widgets from the window shared with the "Messstationen" page.
+init_shared_window(min_date, end_bound)
+shared_start, shared_end, shared_horizon = get_shared_window(min_date, end_bound)
 
 if "selected_horizon" not in st.session_state:
-    st.session_state.selected_horizon = "Maximum"
+    st.session_state.selected_horizon = shared_horizon
 if "applied_horizon" not in st.session_state:
     st.session_state.applied_horizon = st.session_state.selected_horizon
 if "date_start" not in st.session_state:
-    st.session_state.date_start = min_date
+    st.session_state.date_start = shared_start
 if "date_end" not in st.session_state:
-    st.session_state.date_end = today_date
+    st.session_state.date_end = shared_end
 
 ticker_signature = tuple(tickers)
 if "last_ticker_signature" not in st.session_state:
@@ -244,76 +267,89 @@ if "last_ticker_signature" not in st.session_state:
 if "last_selected_min_date" not in st.session_state:
     st.session_state.last_selected_min_date = min_date
 
-# If a new station selection extends the available history, switch to Maximum range.
+# If a new station selection extends the available history, show the whole series.
 if ticker_signature != st.session_state.last_ticker_signature:
     previous_min_date = st.session_state.last_selected_min_date
     if min_date < previous_min_date:
-        st.session_state.selected_horizon = "Maximum"
-        st.session_state.applied_horizon = "Maximum"
+        st.session_state.selected_horizon = FULL_RANGE_LABEL
+        st.session_state.applied_horizon = FULL_RANGE_LABEL
         st.session_state.date_start = min_date
-        st.session_state.date_end = today_date
+        st.session_state.date_end = end_bound
     st.session_state.last_ticker_signature = ticker_signature
 
 st.session_state.last_selected_min_date = min_date
 
-with top_left_cell:
-    # Reserve layout position so date pickers stay above the horizon selector.
-    date_container = st.container()
+with controls_cell:
+    # Dates and horizon share one row; the columns are created up front so the
+    # widgets can be filled in whatever order the logic below needs.
+    time_cols = st.columns([1, 1, 3], gap="medium", vertical_alignment="bottom")
 
-    if st.session_state.selected_horizon not in horizon_map:
-        st.session_state.selected_horizon = "Maximum"
+    if (
+        st.session_state.selected_horizon is not None
+        and st.session_state.selected_horizon not in horizon_map
+    ):
+        st.session_state.selected_horizon = FULL_RANGE_LABEL
 
-    st.pills(
-        "Zeithorizont",
-        options=list(horizon_map.keys()),
-        key="selected_horizon",
-        selection_mode="single",
-    )
+    with time_cols[2]:
+        st.pills(
+            "Zeithorizont",
+            options=list(horizon_map.keys()),
+            key="selected_horizon",
+            selection_mode="single",
+        )
 
+    # Deselecting the pill (or editing a date) means "own period": the dates below
+    # stay as they are.
     horizon = st.session_state.selected_horizon
-    if horizon not in horizon_map:
-        horizon = "Maximum"
-        st.session_state.selected_horizon = horizon
-    horizon_days = horizon_map[horizon]
+    horizon_days = horizon_map.get(horizon) if horizon else None
 
     if horizon != st.session_state.applied_horizon:
         st.session_state.applied_horizon = horizon
-        if horizon_days == "custom":
+        if horizon is None:
             pass
         elif horizon_days is None:
             st.session_state.date_start = min_date
-            st.session_state.date_end = today_date
+            st.session_state.date_end = end_bound
         else:
-            st.session_state.date_end = today_date
-            candidate_start = today_date - timedelta(days=horizon_days - 1)
+            st.session_state.date_end = end_bound
+            candidate_start = end_bound - timedelta(days=horizon_days - 1)
             st.session_state.date_start = max(min_date, candidate_start)
 
     # Keep existing values valid when selected stations change available date range.
-    if st.session_state.date_end > today_date:
-        st.session_state.date_end = today_date
+    if st.session_state.date_end > end_bound:
+        st.session_state.date_end = end_bound
     if st.session_state.date_end < min_date:
         st.session_state.date_end = min_date
-    if st.session_state.date_start > today_date:
-        st.session_state.date_start = today_date
+    if st.session_state.date_start > end_bound:
+        st.session_state.date_start = end_bound
     if st.session_state.date_start < min_date:
         st.session_state.date_start = min_date
 
-    with date_container:
-        date_cols = st.columns(2)
-        date_cols[0].date_input(
-            "Start",
-            min_value=min_date,
-            max_value=today_date,
-            key="date_start",
-            on_change=mark_main_horizon_custom,
-        )
-        date_cols[1].date_input(
-            "Ende",
-            min_value=min_date,
-            max_value=today_date,
-            key="date_end",
-            on_change=mark_main_horizon_custom,
-        )
+    if horizon is None:
+        time_cols[2].caption("Eigener Zeitraum – über Start und Ende gesetzt.")
+
+    time_cols[0].date_input(
+        "Start",
+        min_value=min_date,
+        max_value=end_bound,
+        key="date_start",
+        on_change=mark_main_horizon_custom,
+    )
+    time_cols[1].date_input(
+        "Ende",
+        min_value=min_date,
+        max_value=end_bound,
+        key="date_end",
+        on_change=mark_main_horizon_custom,
+    )
+
+# Hand the window and the station selection to the other pages.
+set_shared_window(
+    st.session_state.date_start,
+    st.session_state.date_end,
+    st.session_state.selected_horizon,
+)
+set_shared_stations(tickers)
 
 if st.session_state.date_start > st.session_state.date_end:
     st.error("Das Startdatum muss vor dem Enddatum liegen.")
@@ -327,7 +363,7 @@ sim2 = sim2_full.loc[date_start:date_end]
 d862 = d862_full.loc[date_start:date_end]
 
 if data2.empty:
-    st.warning("Keine Daten im gewaelten Zeitraum gefunden.")
+    st.warning("Keine Daten im gewählten Zeitraum gefunden.")
     st.stop()
 
 # reindex (not direct selection): stations missing from a source - e.g. WUS,
@@ -336,7 +372,16 @@ data = data2.reindex(columns=tickers)
 sim = sim2.reindex(columns=tickers)
 d86 = d862.reindex(columns=tickers)
 
-summary_data = data if st.session_state.swc_source == "CRNS" else sim
+selected_sources_overview = [
+    source for source in SOURCE_LABELS if source in st.session_state.swc_sources
+]
+# The overview plots the whole series; the range slider below it holds the full
+# record while the axis shows the selected window. Both are clipped to the CRNS
+# span so the long model history does not stretch axis and navigator.
+source_data = {
+    "CRNS": crns_plot_full.loc[crns_span[0] : crns_span[1]].reindex(columns=tickers),
+    "SWAP": sim2_full.loc[crns_span[0] : crns_span[1]].reindex(columns=tickers),
+}
 
 locs = load_locations(URL_LOCATIONS)
 
@@ -360,7 +405,10 @@ locs = load_locations(URL_LOCATIONS)
 empty_columns = data.columns[data.isna().all()].tolist()
 
 if empty_columns:
-    st.error(f"Error loading data for the tickers: {', '.join(empty_columns)}.")
+    st.error(
+        "Für folgende Standorte konnten keine Daten geladen werden: "
+        f"{', '.join(station_label(col, locs) for col in empty_columns)}."
+    )
     st.stop()
 
 mean_theta = data.mean()
@@ -381,8 +429,17 @@ mean_theta = data.mean()
 #     )
 
 with map_cell:
+    # Station selection sits with the map, both feed the same session state.
+    st.multiselect(
+        "Standorte",
+        options=STOCKS,
+        key="tickers_input",
+        format_func=station_labeller(locs),
+        placeholder="Wähle mindestens einen Standort",
+        on_change=update_query_param,
+    )
     st.caption(
-        "Klicke mehrere Punkte zum Hinzufuegen/Entfernen oder nutze Box/Lasso fuer Mehrfachauswahl."
+        "Klicke mehrere Punkte zum Hinzufügen oder Entfernen oder nutze Box und Lasso für die Mehrfachauswahl."
     )
 
     station_ids = [station for station in STOCKS if station in locs.index]
@@ -400,24 +457,24 @@ with map_cell:
         )
 
     hover_fields = [
-        ("id", "ID"),
+        # ("id", "ID"),
         ("name", "Name"),
         ("landuse", "Landnutzung"),
-        ("manufacturer/model", "Hersteller"),
+        ("manufacturer/model", "Messgerät (Modell/Hersteller)"),
         # ("ka5_kurz", "KA5 kurz"),
-        ("ka5_bez", "Bodenart KA5"),
-        ("m1_wert", "kF (bis 1m)"),
-        ("m2_wert", "kF (bis 2m)"),
-        ("fk_1m_wert", "FK 1m"),
-        ("nfk_1m_wert", "nFK 1m"),
+        ("ka5_bez", "Bodenart (Kartieranleitung KA5)"),
+        ("m1_wert", "Gesättigte Leitfähigkeit (0-1 m)"),
+        ("m2_wert", "Gesättigte Leitfähigkeit (0-2 m)"),
+        ("fk_1m_wert", "Feldkapazität (0-1 m)"),
+        ("nfk_1m_wert", "Nutzbare Feldkapazität (0-1 m)"),
         ("humus", "Humusgehalt"),
         ("biomass_eff", "Biomasse [kg/m²]"),
-        ("bulk_density_eff", "Rohdichte [kg/m³]"),
+        ("bulk_density_eff", "Rohdichte des Bodens [kg/m³]"),
         # ("theta_eff", "Theta"),
         # ("organic_matter_eff", "Organische Substanz"),
         # ("lattice_water_eff", "Gitterwasser"),
         # ("theta_total_eff_eff", "Theta gesamt"),
-        ("gw_depth", "GW Tiefe [m]"),
+        ("gw_depth", "Grundwassertiefe [m]"),
     ]
 
     for col, _ in hover_fields:
@@ -442,6 +499,12 @@ with map_cell:
         idx for idx, station in enumerate(station_ids) if station in tickers
     ]
 
+    # Marker and label colours follow the basemap so both stay legible.
+    dark_basemap = st.session_state.map_style in ("Carto Dark", "Google Satellite")
+    marker_color = "#7E7C7C" if dark_basemap else "#1A4600"
+    selected_color = "#FFFFFF" if dark_basemap else "#20C000"
+    label_color = "#7E7C7C" if dark_basemap else "#1A4600"
+
     fig = go.Figure()
 
     fig.add_trace(
@@ -451,14 +514,16 @@ with map_cell:
             mode="markers+text",
             marker=dict(
                 size=12,
-                color="#1D4ED8",
+                color=marker_color,
             ),
-            text=station_ids,
+            text=[station_label(sid, locs) for sid in station_ids],
+            # Full opacity and bold, so the names stay readable on every basemap.
+            textfont=dict(size=12, color=label_color, weight="bold"),
             textposition="top center",
             customdata=station_attributes,
             selectedpoints=selected_point_indices,
-            selected=dict(marker=dict(size=16, color="#DC2626", opacity=1)),
-            unselected=dict(marker=dict(size=12, opacity=0.85)),
+            selected=dict(marker=dict(size=16, color=selected_color, opacity=1)),
+            unselected=dict(marker=dict(size=12, opacity=1)),
             hovertemplate=hover_template,
         )
     )
@@ -503,7 +568,7 @@ with map_cell:
 
     fig.update_layout(
         map=map_layout,
-        height=420,
+        height=250,
         margin=dict(l=0, r=0, t=0, b=0),
     )
 
@@ -516,21 +581,114 @@ with map_cell:
         config={"scrollZoom": True},
     )
 
+    st.selectbox(
+        "Hintergrundkarte",
+        options=[
+            "OpenStreetMap",
+            "Carto Positron",
+            "Carto Dark",
+            "Google Satellite",
+        ],
+        key="map_style",
+    )
+
+    if st.button(
+        "Zu den Messreihen",
+        icon=":material/monitoring:",
+        width="stretch",
+        disabled=not tickers,
+    ):
+        set_shared_stations(tickers)
+        st.switch_page("pages/2_Single_Stations.py")
+
 with main_plot_cell:
-    st.markdown("#### Übersichtsgrafik")
-    if tickers:
-        fig = px.line(
-            summary_data,
-            x=summary_data.index,
-            y=tickers,
-            color_discrete_sequence=px.colors.qualitative.Safe,
-        )
-        fig.update_layout(legend_title_text="Standorte")
-        fig.update_yaxes(title_text=f"SWC ({st.session_state.swc_source}) (cm³/cm³)")
-        add_snow_shading(fig, snow_phase_periods, xrange=(date_start, date_end))
-        st.plotly_chart(fig, width="stretch")
+    if not tickers:
+        st.info("Standorte wählen, um den Zeitreihen-Plot anzuzeigen.")
+    elif not selected_sources_overview:
+        st.info("Mindestens eine Datengrundlage wählen.")
     else:
-        st.info("Waehle Standorte, um den Zeitreihen-Plot anzuzeigen.")
+        station_colors = {
+            station: px.colors.qualitative.Safe[idx % len(px.colors.qualitative.Safe)]
+            for idx, station in enumerate(tickers)
+        }
+        # One row per data source, sharing the time axis.
+        overview_fig = make_subplots(
+            rows=len(selected_sources_overview),
+            cols=1,
+            shared_xaxes=True,
+            vertical_spacing=0.16,
+            subplot_titles=[
+                SOURCE_LABELS[source] for source in selected_sources_overview
+            ],
+        )
+        # Navigator span comes from the measurements, never from the model run.
+        crns_valid = source_data["CRNS"].dropna(how="all").index
+        full_start = crns_valid.min() if len(crns_valid) else None
+        full_end = crns_valid.max() if len(crns_valid) else None
+        for row, source in enumerate(selected_sources_overview, start=1):
+            frame = source_data[source]
+            valid_index = frame.dropna(how="all").index
+            if len(valid_index) and full_start is None:
+                full_start = (
+                    valid_index.min()
+                    if full_start is None
+                    else min(full_start, valid_index.min())
+                )
+                full_end = (
+                    valid_index.max()
+                    if full_end is None
+                    else max(full_end, valid_index.max())
+                )
+            for station in tickers:
+                if station not in frame.columns:
+                    continue
+                series = to_plot_unit(frame[station])
+                overview_fig.add_trace(
+                    go.Scatter(
+                        x=series.index,
+                        y=series,
+                        mode="lines",
+                        name=station_label(station, locs),
+                        legendgroup=station,
+                        showlegend=row == 1,
+                        # Model runs are dashed everywhere in the app.
+                        line=dict(
+                            color=station_colors[station],
+                            dash="dash" if source == "SWAP" else "solid",
+                        ),
+                    ),
+                    row=row,
+                    col=1,
+                )
+            overview_fig.update_yaxes(title_text=moisture_label(), row=row, col=1)
+            add_snow_shading(
+                overview_fig,
+                snow_phase_periods,
+                xrange=(full_start, full_end)
+                if full_start is not None
+                else (date_start, date_end),
+                add_legend=row == 1,
+                add_label=row == 1,
+                row=row,
+                col=1,
+            )
+        overview_fig.update_layout(
+            height=400,
+            legend_title_text="Standorte",
+            margin=dict(l=40, r=20, t=40, b=40),
+        )
+        # Navigator strip over the whole record, window on the axis.
+        if full_start is None:
+            full_start, full_end = date_start, date_end
+        add_range_slider(
+            overview_fig,
+            full_range=(full_start, full_end),
+            window=(max(date_start, full_start), min(date_end, full_end)),
+            thickness=0.08,
+            row=len(selected_sources_overview),
+            col=1,
+        )
+        st.plotly_chart(overview_fig, width="stretch", config=PLOT_CONFIG)
 
 ""
 ""
@@ -556,27 +714,71 @@ if (
     for station in STOCKS:
         st.session_state[f"download_station_{station}"] = station in tickers
 
+# Widget-bound keys are dropped while another page is shown, so re-seed whatever
+# is missing instead of relying on the anchor block above.
+if "download_start" not in st.session_state:
+    st.session_state.download_start = plot_start_date
+if "download_end" not in st.session_state:
+    st.session_state.download_end = plot_end_date
+for station in STOCKS:
+    st.session_state.setdefault(f"download_station_{station}", station in tickers)
 if "download_horizon" not in st.session_state:
     st.session_state.download_horizon = st.session_state.selected_horizon
 if "download_applied_horizon" not in st.session_state:
     st.session_state.download_applied_horizon = st.session_state.download_horizon
-if st.session_state.download_horizon not in horizon_map:
-    st.session_state.download_horizon = "Maximum"
+if (
+    st.session_state.download_horizon is not None
+    and st.session_state.download_horizon not in horizon_map
+):
+    st.session_state.download_horizon = FULL_RANGE_LABEL
 
 with st.expander("Download", expanded=False):
     st.write("Datenarten")
     source_cols = st.columns(3)
-    include_crns = source_cols[0].checkbox("SWC (CRNS)", value=True)
-    include_swap = source_cols[1].checkbox("SWC (SWAP)", value=False)
-    include_d86 = source_cols[2].checkbox("D86 (CRNS)", value=False)
+    include_crns = source_cols[0].checkbox(
+        "Bodenfeuchte (Messung via CRNS)", value=True
+    )
+    include_swap = source_cols[1].checkbox("Bodenfeuchte (Modell SWAP)", value=False)
+    include_d86 = source_cols[2].checkbox(
+        "Eindringtiefe (Messung via CRNS)", value=False
+    )
 
+    # The plots always show Vol.-%; only the download offers a choice of unit.
+    if "download_unit" not in st.session_state:
+        st.session_state.download_unit = DEFAULT_UNIT
+
+    def sync_download_unit():
+        choice = st.session_state.download_unit
+        if choice not in UNITS:
+            # Deselecting would leave no unit at all; keep the last one.
+            st.session_state.download_unit = get_download_unit()
+            return
+        set_download_unit(choice)
+
+    st.segmented_control(
+        "Einheit der Bodenfeuchte",
+        options=list(UNITS),
+        key="download_unit",
+        selection_mode="single",
+        on_change=sync_download_unit,
+    )
+    sync_download_unit()
+
+    unit_suffix = "Vol-Prozent" if get_download_unit() == "Vol.-%" else "m3_pro_m3"
+    # The CRNS export follows the snow setting from the selection above.
     selected_sources = []
     if include_crns:
-        selected_sources.append(("SWC_CRNS", data2_full))
+        selected_sources.append(
+            (f"Bodenfeuchte_CRNS_{unit_suffix}", to_download_unit(crns_plot_full))
+        )
     if include_swap:
-        selected_sources.append(("SWC_SWAP", sim2_full))
+        selected_sources.append(
+            (f"Bodenfeuchte_SWAP_{unit_suffix}", to_download_unit(sim2_full))
+        )
     if include_d86:
-        selected_sources.append(("D86_CRNS", d862_full))
+        selected_sources.append(
+            ("Eindringtiefe_CRNS_cm", maybe_mask_snow(d862_full, snow_flags))
+        )
 
     st.write("Stationen zum Download")
     if st.button("Alle Stationen auswählen", key="download_select_all"):
@@ -585,7 +787,9 @@ with st.expander("Download", expanded=False):
 
     station_cols = st.columns(3)
     for idx, station in enumerate(STOCKS):
-        station_cols[idx % 3].checkbox(station, key=f"download_station_{station}")
+        station_cols[idx % 3].checkbox(
+            station_label(station, locs), key=f"download_station_{station}"
+        )
 
     download_stations = [
         station
@@ -598,8 +802,11 @@ with st.expander("Download", expanded=False):
     download_min_date = selected_min_date(data2_full, effective_download_stations)
     download_max_date = today_date
 
-    if st.session_state.download_horizon not in horizon_map:
-        st.session_state.download_horizon = "Maximum"
+    if (
+        st.session_state.download_horizon is not None
+        and st.session_state.download_horizon not in horizon_map
+    ):
+        st.session_state.download_horizon = FULL_RANGE_LABEL
 
     st.pills(
         "Download Zeithorizont",
@@ -609,14 +816,13 @@ with st.expander("Download", expanded=False):
     )
 
     download_horizon = st.session_state.download_horizon
-    if download_horizon not in horizon_map:
-        download_horizon = "Maximum"
-        st.session_state.download_horizon = download_horizon
-    download_horizon_days = horizon_map[download_horizon]
+    download_horizon_days = (
+        horizon_map.get(download_horizon) if download_horizon else None
+    )
 
     if download_horizon != st.session_state.download_applied_horizon:
         st.session_state.download_applied_horizon = download_horizon
-        if download_horizon_days == "custom":
+        if download_horizon is None:
             pass
         elif download_horizon_days is None:
             st.session_state.download_start = download_min_date
@@ -681,7 +887,13 @@ with st.expander("Download", expanded=False):
         )
 
     st.caption(
-        "Vorschau der Downloaddaten (Spalten sind nach Datenart gekennzeichnet)."
+        "Vorschau der Downloaddaten. Die Spaltennamen nennen Standort, Datenart und "
+        f"Einheit; die Bodenfeuchte steht in {get_download_unit()}. "
+        + (
+            "Messwerte via CRNS in Schneephasen sind ausgeblendet."
+            if get_mask_snow()
+            else "Schneephasen sind nicht ausgeblendet."
+        )
     )
     st.dataframe(download_data, width="stretch")
 
@@ -701,6 +913,8 @@ with st.expander("Download", expanded=False):
             use_container_width=True,
         )
     elif not selected_sources:
-        st.info("Wähle mindestens eine Datenart fuer den Download.")
+        st.info("Wähle mindestens eine Datenart für den Download.")
     else:
-        st.info("Wähle mindestens eine Station fuer den Download.")
+        st.info("Wähle mindestens eine Station für den Download.")
+
+glossary_expander()

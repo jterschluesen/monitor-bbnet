@@ -10,7 +10,7 @@ import streamlit as st
 
 from data_sources import (
     DEFAULT_SMI_DEPTH,
-    DEFAULT_STOCKS,
+    FULL_RANGE_LABEL,
     STOCKS,
     SMI_BANDS,
     SMI_BAND_COLORS,
@@ -20,15 +20,24 @@ from data_sources import (
     SMI_REFERENCE_PERIOD,
     SMI_SWAP_DEPTH,
     SWAP_SM_DEPTHS,
+    URL_LOCATIONS,
+    PLOT_CONFIG,
     add_smi_bands,
     construction_warning,
+    get_shared_stations,
+    glossary_expander,
+    load_locations,
     load_smi,
     load_smi_steps,
     load_time_series,
+    moisture_label,
     selected_max_date,
     selected_min_date,
     smi_band,
     smi_censoring,
+    station_label,
+    station_labeller,
+    to_plot_unit,
 )
 
 st.set_page_config(
@@ -41,31 +50,42 @@ construction_warning()
 
 st.title("Klimatischer Bodenfeuchteindex")
 st.write(
-    f"Der klimatische Bodenfeuchteindex ordnet die **aktuelle Bodenfeuchte** "
-    f"der SWAP-Simulationen in die historische Verteilung am selben Kalendertag ein. "
-    f"Er liegt zwischen 0 (sehr trocken) und 1 (sehr nass). "
-    f"Die Kacheln zeigen den aktuellen Status je Standort, während das darunter liegende Diagramm den zeitlichen Verlauf inklusive Dürre- und Nässebändern visualisiert. Optional kann die SWAP-Bodenfeuchte "
-    f"derselben Tiefe auf einer zweiten Achse überlagert werden. Die Klassifikation der trockenen Seite folgt dem Schema der [UFZ-Dürreklassifizierung](https://www.ufz.de/index.php?de=37937) "
-    f"(Kumar et al., 2013; Marx et al., o. J.); die nasse Seite ist mit denselben Schwellen gespiegelt (0,70/0,80/0,90/0,95/0,98). \n\n"
-    f"Die Grundlage der Berechnung bildet die **empirische Verteilungsfunktion (Weibull-Plotting-Positions)** "
-    f"der Referenzperiode {SMI_REFERENCE_PERIOD} aus der SWAP Simulation. Jeder Kalendertag hat seine eigene "
-    f"Verteilung, welche aus dem Pool aller Bodenfeuchtewerte im Fenster von "
-    f"±{SMI_POOL_HALFWIDTH_DAYS} Tagen um dieses Datum über den Referenzzeitraum gebildet wird. "
-    f"Die Datengrundlage unterscheidet sich somit von der des Dürreindexes des UFZ-Dürremonitor (Samaniego et al., 2013; Zink et al., 2016). "
+    f"Der klimatische Bodenfeuchteindex ordnet die **aktuelle Bodenfeuchte** aus dem "
+    f"Bodenwasserhaushaltsmodell [SWAP](https://www.swap.alterra.nl/) in die historische "
+    f"Verteilung am selben Kalendertag ein. Er liegt zwischen 0 (sehr trocken) und 1 "
+    f"(sehr nass). Die Kacheln zeigen den aktuellen Status je Standort für drei "
+    f"Tiefen ({', '.join(SMI_DEPTHS)}). Im darunter liegenden Diagramm findet sich der zeitliche "
+    f"Verlauf des Indexes und optional der modellierte Bodenfeuchte. "
+    f"Die Klassifikation des Indexes folgt dem Schema der Dürreklassifizierung des "
+    f"Helmholtz-Zentrums für Umweltforschung "
+    f"([UFZ](https://www.ufz.de/index.php?de=37937), Kumar et al., 2013; Marx et al., o. J.), wobei "
+    f"die nasse Seite ist mit denselben Grenzen gespiegelt wurde und "
+    f"in Blautönen dargestellt ist. Der Bereich zwischen 0,30 und 0,70 gilt als „normal“.\n\n"
+    f"Die Grundlage der Berechnung bildet die **empirische Verteilungsfunktion "
+    f"(Weibull-Plotting-Positions)** der Referenzperiode {SMI_REFERENCE_PERIOD} aus der "
+    f"Modellsimulation. Jeder Kalendertag hat seine eigene Verteilung, welche aus dem Pool "
+    f"aller Bodenfeuchtewerte im Fenster von ±{SMI_POOL_HALFWIDTH_DAYS} Tagen um dieses "
+    f"Datum über den Referenzzeitraum gebildet wird. Die Datengrundlage und Berechnung unterscheidet sich "
+    f"somit von der des Dürremonitors des UFZ (Samaniego et al., 2013; Zink et al., 2016). "
     f"Der Index beschreibt die empirische Unterschreitungswahrscheinlichkeit der aktuellen "
-    f"Bodenfeuchte und stellt eine Einordnung in die historische Verteilung dar. Die Tiefe der gemittelten Bodenfeuchte ist wählbar "
-    f"({', '.join(SMI_DEPTHS)})"
-    f".\n\n"
-    f"Eine empirische Verteilung ist nach unten und oben begrenzt: Liegt die aktuelle "
-    f"Bodenfeuchte auf oder unter der **untersten** bzw. auf oder über der **obersten "
-    f"Stufe** der Verteilungsfunktion, lässt sich der SMI nicht auflösen. Solche Standorte sind unter "
-    f"„Aktueller Status“ **gestrichelt umrandet** und zeigen, dass es sich extreme Bedingungen handelt."
+    f"Bodenfeuchte und stellt eine Einordnung in die historische Verteilung dar.\n\n"
+    f"Da die empirische Verteilung durch minimal und maximal gemessene Werte nach unten und oben begrenzt ist, kann der Index für Bodenfeuchtewerte außerhalb dieser Grenzen nicht aufgelöst werden. "
+    f"Liegt die aktuelle Bodenfeuchte auf oder unter der untersten bzw. auf oder über der obersten Stufe der Verteilungsfunktion, "
+    f"ist dieser unter „Aktueller Status“ **gestrichelt umrandet** und zeigt extreme Bedingungen an."
 )
 
 # Stable colour-vision-deficiency-safe colour per station (CARTO "Safe").
 STATION_COLORS = {
     s: px.colors.qualitative.Safe[i % len(px.colors.qualitative.Safe)]
     for i, s in enumerate(STOCKS)
+}
+
+
+# Frame around an unresolvable index: the colour of the class the value is beyond,
+# i.e. exceptional drought at the dry bound and exceptional wetness at the wet one.
+CENSOR_FRAME_COLORS = {
+    "low": SMI_BAND_COLORS["exceptional"],
+    "high": SMI_BAND_COLORS["exceptional_wet"],
 }
 
 
@@ -77,38 +97,54 @@ def _text_on(hex_color: str) -> str:
     return "#000000" if luminance > 0.55 else "#ffffff"
 
 
-# --- Depth selection ---------------------------------------------------------
-depth_label = st.segmented_control(
-    "Tiefe",
-    options=list(SMI_DEPTHS.keys()),
-    default=DEFAULT_SMI_DEPTH,
-    selection_mode="single",
-)
-depth_label = depth_label if depth_label in SMI_DEPTHS else DEFAULT_SMI_DEPTH
-depth_key = SMI_DEPTHS[depth_label]
+locs = load_locations(URL_LOCATIONS)
 
-try:
-    smi = load_smi(depth_key)
-except Exception:
+# --- Load every depth; the status tiles show all of them ---------------------
+smi_by_depth = {}
+steps_by_depth = {}
+missing_depths = []
+missing_steps = []
+for label, key in SMI_DEPTHS.items():
+    try:
+        smi_by_depth[label] = load_smi(key)
+    except Exception:
+        missing_depths.append(label)
+        continue
+    try:
+        steps_by_depth[label] = load_smi_steps(key)
+    except Exception:
+        # Fail soft: without the bounds we simply cannot flag unresolvable values.
+        steps_by_depth[label] = (pd.DataFrame(), pd.DataFrame())
+        missing_steps.append(label)
+
+if not smi_by_depth:
     st.warning(
-        "SMI-Daten sind derzeit nicht verfügbar "
-        "(Datei evtl. noch nicht im Online-Verzeichnis)."
+        "Die Daten des Bodenfeuchteindex sind derzeit nicht verfügbar "
+        "(Dateien evtl. noch nicht im Online-Verzeichnis)."
     )
     st.stop()
 
-try:
-    first_step, last_step = load_smi_steps(depth_key)
-except Exception:
-    # Fail soft: without the CDF bounds we simply cannot flag unresolvable SMI.
+if missing_depths:
     st.warning(
-        "Die Grenzen der empirischen Verteilung sind derzeit nicht verfügbar – "
-        "nicht auflösbare SMI-Werte können nicht markiert werden."
+        "Für folgende Tiefen liegen derzeit keine Daten vor: "
+        f"{', '.join(missing_depths)}."
     )
-    first_step = last_step = pd.DataFrame()
+if missing_steps:
+    st.caption(
+        "Die Grenzen der empirischen Verteilung fehlen für "
+        f"{', '.join(missing_steps)} – nicht auflösbare Werte sind dort nicht markiert."
+    )
 
-available = [s for s in STOCKS if s in smi.columns]
+depth_labels = list(smi_by_depth)
+status_depth = (
+    DEFAULT_SMI_DEPTH if DEFAULT_SMI_DEPTH in depth_labels else depth_labels[0]
+)
+
+available = [
+    s for s in STOCKS if any(s in frame.columns for frame in smi_by_depth.values())
+]
 if not available:
-    st.warning("Keine Standorte in den SMI-Daten gefunden.")
+    st.warning("Keine Standorte in den Daten des Bodenfeuchteindex gefunden.")
     st.stop()
 
 
@@ -122,78 +158,122 @@ def _step_at(steps: pd.DataFrame, station, when):
     return float(series.loc[when])
 
 
-# --- Status badges: traffic light for every station, driest first ------------
-latest_value = {}
-latest_date = {}
-censoring = {}
-for s in available:
-    series = smi[s].dropna()
-    if series.empty:
-        latest_value[s] = None
-        latest_date[s] = None
-        censoring[s] = None
-        continue
-    latest_value[s] = float(series.iloc[-1])
-    latest_date[s] = series.index[-1]
-    censoring[s] = smi_censoring(
-        latest_value[s],
-        _step_at(first_step, s, latest_date[s]),
-        _step_at(last_step, s, latest_date[s]),
-    )
+# --- Status tiles: one per station, one row per depth, driest first ----------
+# status[station][depth_label] = (value, date, censoring)
+status = {}
+for station in available:
+    per_depth = {}
+    for label in depth_labels:
+        frame = smi_by_depth[label]
+        if station not in frame.columns:
+            per_depth[label] = (None, None, None)
+            continue
+        series = frame[station].dropna()
+        if series.empty:
+            per_depth[label] = (None, None, None)
+            continue
+        value = float(series.iloc[-1])
+        when = series.index[-1]
+        first_step, last_step = steps_by_depth.get(
+            label, (pd.DataFrame(), pd.DataFrame())
+        )
+        per_depth[label] = (
+            value,
+            when,
+            smi_censoring(
+                value,
+                _step_at(first_step, station, when),
+                _step_at(last_step, station, when),
+            ),
+        )
+    status[station] = per_depth
 
-order = sorted(
-    available,
-    key=lambda s: (
-        latest_value[s] is None,
-        latest_value[s] if latest_value[s] is not None else 1.0,
-    ),
-)
+
+def _sort_key(station):
+    value = status[station][status_depth][0]
+    if value is None:
+        # Fall back to the mean of the other depths so a missing default depth
+        # does not push an otherwise very dry station to the end.
+        others = [v for v, _, _ in status[station].values() if v is not None]
+        if others:
+            return (1, sum(others) / len(others))
+        return (2, 1.0)
+    return (0, value)
+
+
+order = sorted(available, key=_sort_key)
 
 st.subheader("Aktueller Status")
+st.caption(
+    f"Je Standort eine Kachel mit allen Tiefen; sortiert nach dem trockensten Wert "
+    f"für {status_depth}."
+)
 
-grid_col, legend_col = st.columns([3, 2.2], gap="medium")
+grid_col, legend_col = st.columns([3, 1], gap="medium")
 
 with grid_col:
-    PER_ROW = 3
+    PER_ROW = 4
     for row_start in range(0, len(order), PER_ROW):
         cols = st.columns(PER_ROW, gap="medium")
         for j, station in enumerate(order[row_start : row_start + PER_ROW]):
-            value = latest_value[station]
-            _, label, color = smi_band(value)
-            text_color = _text_on(color)
-            censor = censoring[station]
-            if value is None:
-                value_str = "–"
-            elif censor == "low":
-                value_str = f"≤ {value:.2f}"
-            elif censor == "high":
-                value_str = f"≥ {value:.2f}"
-            else:
-                value_str = f"{value:.2f}"
-            # Keep the border in both cases so tiles stay the same size.
-            border = f"3px dashed {text_color}" if censor else "3px solid transparent"
-            hint = (
-                " title='SMI nicht auflösbar: Bodenfeuchte am Rand der empirischen Verteilung'"
-                if censor
-                else ""
-            )
-            date_str = (
-                ""
-                if latest_date[station] is None
-                else latest_date[station].date().isoformat()
-            )
+            depth_rows = []
+            dates = []
+            for label in depth_labels:
+                value, when, censor = status[station][label]
+                _, band_label, color = smi_band(value)
+                text_color = _text_on(color)
+                if value is None:
+                    value_str = "–"
+                elif censor == "low":
+                    value_str = f"≤ {value:.2f}"
+                elif censor == "high":
+                    value_str = f"≥ {value:.2f}"
+                else:
+                    value_str = f"{value:.2f}"
+                if when is not None:
+                    dates.append(when)
+                # An unresolvable index is framed twice: the whole depth row in the
+                # colour of the class it lies beyond (dark red at the dry bound, dark
+                # blue at the wet one) plus the value itself in the text colour. The
+                # pale halo keeps the row frame visible on the darkest band colours.
+                if censor:
+                    value_style = "border:2px dashed currentColor;border-radius:6px;padding:0 6px;"
+                    row_frame = (
+                        f"border:3px dashed {CENSOR_FRAME_COLORS[censor]};"
+                        "box-shadow:0 0 0 2px rgba(255,255,255,0.65);"
+                    )
+                else:
+                    value_style = "border:2px solid transparent;padding:0 6px;"
+                    row_frame = "border:2px solid transparent;"
+                hint = (
+                    " title='Index nicht auflösbar: Bodenfeuchte am Rand der "
+                    "empirischen Verteilung'"
+                    if censor
+                    else f" title='{band_label}'"
+                )
+                depth_rows.append(
+                    f'<div{hint} style="background:{color};color:{text_color};'
+                    f"display:flex;align-items:center;justify-content:space-between;"
+                    f'gap:8px;border-radius:7px;padding:5px 8px;margin:3px 0;{row_frame}">'
+                    f'<span style="font-size:0.78rem;">{label}</span>'
+                    f'<span style="font-size:1.05rem;font-weight:700;{value_style}">'
+                    f"{value_str}</span></div>"
+                )
+            date_str = max(dates).date().isoformat() if dates else "keine Daten"
             cols[j].markdown(
                 f"""
-<div{hint} style="background:{color};color:{text_color};border-radius:10px;margin:4px 0;
-            padding:10px 6px;text-align:center;line-height:1.25;border:{border};">
-  <div style="font-weight:700;font-size:1.05rem;">{station}</div>
-  <div style="font-size:1.3rem;font-weight:700;">{value_str}</div>
-  <div style="font-size:0.78rem;">{label}</div>
-  <div style="font-size:0.68rem;opacity:0.85;">{date_str}</div>
+<div style="border:1px solid rgba(0,0,0,0.12);border-radius:10px;margin:4px 0;
+            padding:8px;line-height:1.25;">
+  <div style="font-weight:700;font-size:0.95rem;text-align:center;margin-bottom:4px;">
+    {station_label(station, locs)}</div>
+  {"".join(depth_rows)}
+  <div style="font-size:0.68rem;opacity:0.7;text-align:center;margin-top:4px;">
+    Stand {date_str}</div>
 </div>
 """,
                 unsafe_allow_html=True,
             )
+
 
 def _legend_rows(bands):
     """Legend rows, driest -> wettest, with SMI ranges and percentile classes."""
@@ -222,19 +302,23 @@ with legend_col:
     st.markdown(
         '<div style="display:flex;align-items:center;margin:14px 0 4px 0;">'
         '<span style="width:26px;height:26px;border-radius:5px;display:inline-block;'
-        "margin-right:10px;flex:0 0 auto;border:3px dashed currentColor;"
-        'opacity:0.8;"></span>'
+        "margin-right:10px;flex:0 0 auto;border:3px dashed "
+        f'{CENSOR_FRAME_COLORS["low"]};"></span>'
         '<span style="font-size:0.92rem;line-height:1.25;">'
-        "<b>SMI nicht auflösbar</b><br>"
-        '<span style="opacity:0.7;">Bodenfeuchte auf oder jenseits der untersten/'
+        "<b>Index nicht auflösbar</b><br>"
+        '<span style="opacity:0.7;">Bodenfeuchte auf oder jenseits der untersten bzw. '
         "obersten Stufe der empirischen Verteilung; der Wert ist nur eine "
-        "Ober- (≤) bzw. Untergrenze (≥).</span></span></div>",
+        "Ober- (≤) bzw. Untergrenze (≥). Dunkelroter Rahmen: trockener als jeder Wert "
+        "des Referenzzeitraums. Dunkelblauer Rahmen: nasser als jeder Wert des "
+        "Referenzzeitraums.</span></span></div>",
         unsafe_allow_html=True,
     )
     st.caption(
-        "Ordinale Skala zwischen 0 (sehr trocken) und 1 (sehr nass). Dürreklassen nach "
-        "[UFZ-Dürreklassifizierung](https://www.ufz.de/index.php?de=37937), "
-        "Nässeklassen an denselben Schwellen gespiegelt."
+        "Jede Kachel enthält eine Zeile je Tiefe; die Farbe zeigt die Klasse dieser "
+        "Tiefe. Ordinale Skala zwischen 0 (sehr trocken) und 1 (sehr nass). Dürreklassen "
+        "nach der [Dürreklassifizierung des UFZ](https://www.ufz.de/index.php?de=37937), "
+        "Nässeklassen an denselben Schwellen gespiegelt. Der Bereich zwischen 0,30 und "
+        "0,70 gilt als „normal“."
     )
 
 st.divider()
@@ -242,14 +326,20 @@ st.divider()
 # --- Time series with drought bands ------------------------------------------
 st.subheader("Zeitlicher Verlauf")
 
-default_sel = [s for s in DEFAULT_STOCKS if s in available] or available[:3]
-sel_stations = st.multiselect("Standorte", options=available, default=default_sel)
+# Stations picked on the overview page seed this selection once.
+default_sel = [s for s in get_shared_stations([]) if s in available] or available[:3]
+sel_stations = st.multiselect(
+    "Standorte",
+    options=available,
+    default=default_sel,
+    format_func=station_labeller(locs),
+)
 
-control_cols = st.columns([3, 2])
+DEFAULT_HORIZON = "Letzte 14 Tage"
 horizon_map = {
-    # "Maximum": None,
+    FULL_RANGE_LABEL: None,
     "Letzte 7 Tage": 7,
-    "Letzte 14 Tage": 14,
+    DEFAULT_HORIZON: 14,
     "Letzte 3 Monate": 90,
     "1 Jahr": 365,
     "3 Jahre": 3 * 365,
@@ -257,18 +347,30 @@ horizon_map = {
     "10 Jahre": 10 * 365,
     # "30 Jahre": 30 * 365,
 }
+control_cols = st.columns([1.6, 2.4, 2])
 with control_cols[0]:
+    depth_label = st.segmented_control(
+        "Tiefe",
+        options=depth_labels,
+        default=status_depth,
+        selection_mode="single",
+    )
+    depth_label = depth_label if depth_label in smi_by_depth else status_depth
+    depth_key = SMI_DEPTHS[depth_label]
+    smi = smi_by_depth[depth_label]
+with control_cols[1]:
     horizon = st.pills(
         "Zeithorizont",
         options=list(horizon_map.keys()),
-        default="Letzte 14 Tage",
+        default=DEFAULT_HORIZON,
         selection_mode="single",
+        key="smi_horizon",
     )
-with control_cols[1]:
-    # Only the depth the SMI itself is derived from can be overlaid.
+with control_cols[2]:
+    # Only the depth the index itself is derived from can be overlaid.
     swap_label = SMI_SWAP_DEPTH[depth_key]
     show_swap = st.checkbox(
-        f"SWAP-Bodenfeuchte ({swap_label}) überlagern",
+        f"Bodenfeuchte aus dem Modell SWAP ({swap_label}) überlagern",
         value=False,
     )
 
@@ -276,15 +378,59 @@ if not sel_stations:
     st.info("Wähle mindestens einen Standort für den Verlauf.")
     st.stop()
 
-horizon = horizon if horizon in horizon_map else "Maximum"
-min_date = selected_min_date(smi, sel_stations)
-today = pd.Timestamp.today().normalize()
-horizon_days = horizon_map[horizon]
-if horizon_days is None:
-    start = pd.Timestamp(min_date)
+data_min = selected_min_date(smi, sel_stations)
+data_max = selected_max_date(smi, sel_stations)
+
+
+def _sync_smi_dates():
+    # Typing a start/end date means "own period": no horizon pill stays selected.
+    st.session_state.smi_horizon = None
+
+
+# Deselecting the pill leaves None: that is the own period set below.
+if horizon in horizon_map:
+    horizon_days = horizon_map[horizon]
+    if horizon_days is None:
+        default_start, default_end = data_min, data_max
+    else:
+        default_start = max(
+            data_min, (pd.Timestamp(data_max) - timedelta(days=horizon_days)).date()
+        )
+        default_end = data_max
+    st.session_state.smi_start = default_start
+    st.session_state.smi_end = default_end
 else:
-    start = max(pd.Timestamp(min_date), today - timedelta(days=horizon_days))
-end = pd.Timestamp(selected_max_date(smi, sel_stations))
+    st.session_state.setdefault("smi_start", data_min)
+    st.session_state.setdefault("smi_end", data_max)
+
+# Keep the dates valid when the station selection changes the available range.
+st.session_state.smi_start = min(max(st.session_state.smi_start, data_min), data_max)
+st.session_state.smi_end = min(max(st.session_state.smi_end, data_min), data_max)
+
+date_cols = st.columns([1, 1, 4])
+date_cols[0].date_input(
+    "Start",
+    min_value=data_min,
+    max_value=data_max,
+    key="smi_start",
+    on_change=_sync_smi_dates,
+)
+date_cols[1].date_input(
+    "Ende",
+    min_value=data_min,
+    max_value=data_max,
+    key="smi_end",
+    on_change=_sync_smi_dates,
+)
+if horizon not in horizon_map:
+    date_cols[2].caption("Eigener Zeitraum – über Start und Ende gesetzt.")
+
+if st.session_state.smi_start > st.session_state.smi_end:
+    st.error("Das Startdatum muss vor dem Enddatum liegen.")
+    st.stop()
+
+start = pd.Timestamp(st.session_state.smi_start)
+end = pd.Timestamp(st.session_state.smi_end)
 
 has_secondary = bool(show_swap)
 fig = make_subplots(specs=[[{"secondary_y": has_secondary}]])
@@ -299,7 +445,7 @@ for station in sel_stations:
             x=series.index,
             y=series,
             mode="lines",
-            name=station,
+            name=station_label(station, locs),
             legendgroup=station,
             line=dict(color=STATION_COLORS.get(station, "#444444")),
         ),
@@ -312,7 +458,7 @@ if show_swap:
         swap_sm = load_time_series(SWAP_SM_DEPTHS[swap_label])
     except Exception:
         swap_sm = pd.DataFrame()
-        st.warning(f"SWAP-Bodenfeuchte ({swap_label}) nicht verfügbar.")
+        st.warning(f"Modellwerte SWAP ({swap_label}) sind derzeit nicht verfügbar.")
     for station in sel_stations:
         if station not in swap_sm.columns:
             continue
@@ -322,9 +468,9 @@ if show_swap:
         fig.add_trace(
             go.Scatter(
                 x=series.index,
-                y=series,
+                y=to_plot_unit(series),
                 mode="lines",
-                name=f"{station} · SWAP {swap_label}",
+                name=f"{station_label(station, locs)} · Modell SWAP {swap_label}",
                 legendgroup=station,
                 line=dict(color=STATION_COLORS.get(station, "#444444"), dash="dot"),
                 opacity=0.8,
@@ -332,17 +478,20 @@ if show_swap:
             secondary_y=True,
         )
 
-fig.update_yaxes(title_text=f"SMI {depth_label} (0–1)", range=[0, 1], secondary_y=False)
+fig.update_yaxes(
+    title_text=f"Bodenfeuchteindex {depth_label} (0–1)", range=[0, 1], secondary_y=False
+)
 if has_secondary:
-    fig.update_yaxes(title_text="SWAP-Bodenfeuchte (m³/m³)", secondary_y=True)
+    fig.update_yaxes(title_text=moisture_label("Modell SWAP"), secondary_y=True)
 fig.update_layout(
     legend=dict(orientation="h", yanchor="top", y=-0.18, xanchor="center", x=0.5),
     margin=dict(l=40, r=20, t=20, b=80),
     height=480,
 )
 
-st.plotly_chart(fig, width="stretch")
+st.plotly_chart(fig, width="stretch", config=PLOT_CONFIG)
 
+glossary_expander()
 with st.expander("Quellen", expanded=False):
     st.markdown(
         """

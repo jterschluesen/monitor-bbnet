@@ -20,12 +20,12 @@ pages = [
     st.Page("pages/1_Dashboard.py", title="Übersicht", icon=":material/home:"),
     st.Page(
         "pages/2_Single_Stations.py",
-        title="Einzelstandorte",
+        title="Messstationen",
         icon=":material/monitoring:",
     ),
     st.Page(
         "pages/3_Drought_SMI.py",
-        title="Bodenfeuchteindex",
+        title="Bodenwassermodell und Bodenfeuchteindex",
         icon=":material/water_drop:",
     ),
     
