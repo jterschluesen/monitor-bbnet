@@ -25,25 +25,23 @@ from data_sources import (
     FULL_RANGE_LABEL,
     HORIZON_MAP,
     STOCKS,
+    PRIMARY_CRNS,
     UNITS,
-    URL_SWAP_SM_0_30,
     construction_warning,
-    URL_D86_CRNS,
     URL_LOCATIONS,
-    URL_SWC_CRNS,
-    URL_SWC_SWAP,
     URL_SNOW_FLAGS,
     PLOT_CONFIG,
     add_range_slider,
     add_snow_shading,
     get_download_unit,
     get_mask_snow,
+    get_series,
     get_shared_window,
     glossary_expander,
     init_shared_window,
     load_locations,
+    load_series,
     load_snow_flags,
-    load_time_series,
     maybe_mask_snow,
     moisture_label,
     normalize_stocks,
@@ -187,9 +185,11 @@ with plot_cell:
     main_plot_cell = st.container()
     controls_cell = st.container()
 
+# Names come from the shared registry, so the overview and the station page always
+# mean the same thing by "CRNS". These label the subplots, hence the spelled-out form.
 SOURCE_LABELS = {
-    "CRNS": "Messung via CRNS (tiefengewichtet)",
-    "SWAP": "Modellierte Bodenfeuchte 0-30cm",
+    "CRNS": get_series(PRIMARY_CRNS).hover,
+    "SWAP": get_series("swap_0_30").hover,
 }
 
 with controls_cell:
@@ -226,9 +226,9 @@ if not tickers:
 
 
 # data = load_data(dtimes, STOCKS, rho=0.7, seed=42)
-data2_full = load_time_series(URL_SWC_CRNS)
-sim2_full = load_time_series(URL_SWAP_SM_0_30)  # use 0-30cm instead of weighted
-d862_full = load_time_series(URL_D86_CRNS)
+data2_full = load_series(PRIMARY_CRNS)
+sim2_full = load_series("swap_0_30")  # use 0-30cm instead of weighted
+d862_full = load_series("d86")
 snow_flags = load_snow_flags(URL_SNOW_FLAGS)
 # Shade exactly the phases of the stations on screen, so the band matches the gaps
 # that masking leaves in the curves.

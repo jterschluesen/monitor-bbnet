@@ -8,4 +8,8 @@ wheels/
 
 # Virtual environments
 .venv
+.claude
+.devcontainer
 data/
+# Holds the BB_PROFILE setting for local runs.
+.streamlit/secrets.toml

@@ -6,31 +6,28 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from data_sources import (
     HORIZON_MAP,
+    PRIMARY_CRNS,
     STOCKS,
-    SWAP_SM_DEPTHS,
+    SWAP_START,
     construction_warning,
-    URL_D86_CRNS,
     URL_LOCATIONS,
-    URL_SWC_CRNS,
-    URL_SWC_CRNS_old,
-    URL_SWC_SWAP,
-    URL_SWC_SMT,
-    URL_SWC_NEPTOON_DES,
-    URL_SWC_NEPTOON_UTS,
     URL_SNOW_FLAGS,
     PLOT_CONFIG,
     add_calibration_marker,
     add_range_slider,
     add_snow_shading,
+    get_series,
     get_shared_stations,
     get_shared_window,
     glossary_expander,
+    hover_template,
     load_locations,
+    load_series,
     load_snow_flags,
-    load_time_series,
     maybe_mask_snow,
     moisture_label,
     reset_shared_window,
+    series_for,
     set_shared_window,
     smt_depth_label,
     snow_mask_toggle,
@@ -48,65 +45,33 @@ st.set_page_config(
 
 construction_warning()
 
-st.title("Messreihen einzelner Standorte")
+st.title("Messreihen Einzelner Standorte")
+# Which sources are named here follows the profile - the sensors are not part of
+# every one, so the sentence must not promise data the page cannot show.
+_SOURCE_TEXTS = [
+    "auf der Messung mit kosmischen Neutronensensoren (Messung via CRNS)",
+    *(
+        ["auf punktuellen Bodenfeuchtesensoren (SMT)"]
+        if series_for("smt")
+        else []
+    ),
+    "auf dem Bodenwasserhaushaltsmodell [SWAP](https://www.swap.alterra.nl/)",
+]
 st.write(
-    "Die Seite dient der dient der detaillierten Darstellung der Datne an Einzelstandorten. "
-    "Die dargestellten Daten beruhen auf der Messung mit kosmischen Neutronensensoren "
-    "(Messung via CRNS), auf punktuellen Bodenfeuchtesensoren (SMT) und auf dem "
-    "Bodenwasserhaushaltsmodell [SWAP](https://www.swap.alterra.nl/). "
+    "Die Seite dient der detaillierten Darstellung der Daten an Einzelstandorten. "
+    "Die dargestellten Daten beruhen "
+    + ", ".join(_SOURCE_TEXTS[:-1])
+    + f" und {_SOURCE_TEXTS[-1]}. "
     "Die Eindringtiefe der Neutronenmessung hängt unter anderem von der Bodenfeuchte selbst "
     "ab und ändert sich daher laufend. Damit Messung und Modell vergleichbar bleiben, kann das "
     "Modellergebnis ebenfalls über diese Eindringtiefe gemittelt werden (tiefengewichtet). "
     "Grundsätzliche Informationen zu den Messungen finden Sie unten auf der Seite."
 )
 
-# All hues are from the Okabe-Ito colour-vision-deficiency-safe palette.
-COLOR_CRNS = "#E69F00"  # orange
-COLOR_CRNS_old = "#CC79A7"  # reddish purple
-COLOR_NEPTOON_DES = "#56B4E9"  # sky blue
-COLOR_NEPTOON_UTS = "#0072B2"  # blue
-COLOR_D86 = "#5A2A00"  # brown
-# Kept faint so the penetration depth reads as background, not as a measurement.
-FILL_D86 = "rgba(90, 42, 0, 0.08)"
-ALPHA_D86 = 0.45
+# Which series exist, what they are called and how they are drawn all live in the
+# registry in data_sources.py, filtered by the active profile. Only the per-depth
+# SMT ramp stays here, because those traces are one per sensor depth, not per series.
 SMT_GRAY_SCALE = ["#1F1F1F", "#4D4D4D", "#737373", "#A6A6A6", "#D0D0D0"]
-# One purple family for every SWAP series (light = shallow, dark = deep), kept off
-# the orange/blue hues of the measurements. All model traces are dashed.
-SWAP_DEPTH_COLORS = {"0–30 cm": "#BCBDDC", "0–1 m": "#807DBA", "0–2 m": "#54278F"}
-COLOR_SWAP = "#3F007D"  # depth-weighted model run: darkest of the same family
-TRACE_ALPHA = 0.8
-
-# The SWAP runs reach back to 1990, the CRNS record starts in 2021. Clip the model
-# series so the long simulation history does not stretch the station plots.
-SWAP_START = pd.Timestamp("2024-01-01")
-
-# One metric per fixed SWAP depth mean, next to the CRNS-depth-weighted SWC(SWAP).
-SWAP_DEPTH_METRICS = {f"SWC(SWAP {depth})": depth for depth in SWAP_SM_DEPTHS}
-
-# Internal metric key -> readable label (legend + selector). Grouped by source.
-METRIC_LABELS = {
-    "SWC(CRNS)": "Bodenfeuchte (Messung via CRNS, generelle Kalibrierung)",
-    "SWC(CRNS_old)": "Bodenfeuchte (Messung via CRNS, frühere Kalibrierung)",
-    "SWC(NEPTOON_DES)": "Bodenfeuchte (Messung via CRNS, Auswertung nach Desilets)",
-    "SWC(NEPTOON_UTS)": "Bodenfeuchte (Messung via CRNS, Auswertung nach UTS)",
-    "D86": "Eindringtiefe (Messung via CRNS)",
-    "SWC(SWAP)": "Bodenfeuchte (Modell SWAP, tiefengewichtet)",
-    "SWC(SMT)": "Bodenfeuchte (Sensoren SMT)",
-    **{
-        metric: f"Bodenfeuchte (Modell SWAP, {depth})"
-        for metric, depth in SWAP_DEPTH_METRICS.items()
-    },
-}
-
-CRNS_METRICS = [
-    "SWC(CRNS)",
-    # "SWC(CRNS_old)",
-    "SWC(NEPTOON_DES)",
-    "SWC(NEPTOON_UTS)",
-    "D86",
-]
-MODEL_METRICS = ["SWC(SWAP)"] + list(SWAP_DEPTH_METRICS)
-OTHER_METRICS = ["SWC(SMT)"]
 
 
 def _depth_sort_key(depth_label: str):
@@ -150,25 +115,35 @@ def rename_smt_columns(df: pd.DataFrame) -> pd.DataFrame:
 
 
 locs = load_locations(URL_LOCATIONS)
-swap_full = load_time_series(URL_SWC_SWAP).loc[SWAP_START:]
-SMT = load_time_series(URL_SWC_SMT)
-SMT = rename_smt_columns(SMT)
 snow_flags = load_snow_flags(URL_SNOW_FLAGS)
 
-# Snow on the ground biases the neutron count, so every CRNS-derived series is
-# blanked out during a snow phase; model and in-soil sensors stay untouched.
-crns_full = maybe_mask_snow(load_time_series(URL_SWC_CRNS), snow_flags)
-crns_full_old = maybe_mask_snow(load_time_series(URL_SWC_CRNS_old), snow_flags)
-d86_full = maybe_mask_snow(load_time_series(URL_D86_CRNS), snow_flags)
-neptoon_des_full = maybe_mask_snow(load_time_series(URL_SWC_NEPTOON_DES), snow_flags)
-neptoon_uts_full = maybe_mask_snow(load_time_series(URL_SWC_NEPTOON_UTS), snow_flags)
 
+def frame_for(series):
+    """Full frame for one registry entry, with its per-series treatment applied."""
+    df = load_series(series.key)
+    if series.clip_start:
+        df = df.loc[SWAP_START:]
+    if series.snow_masked:
+        # Snow on the ground biases the neutron count, so every CRNS-derived series
+        # is blanked out during a snow phase; model and in-soil sensors stay untouched.
+        df = maybe_mask_snow(df, snow_flags)
+    return df
+
+
+# The station list always comes from the primary CRNS series, loaded whether or not
+# it is selected; the calibration marker snaps onto its sample grid too.
+crns_primary = frame_for(get_series(PRIMARY_CRNS))
+
+# The sensors are not part of every profile, and their depths have to be known
+# before the selector is drawn.
+smt_series = next(iter(series_for("smt")), None)
+SMT = rename_smt_columns(load_series(smt_series.key)) if smt_series else pd.DataFrame()
 smt_depths = sorted(
     {col.split("_SMT_", 1)[1] for col in SMT.columns if "_SMT_" in col},
     key=_depth_sort_key,
 )
 
-available_stations = [station for station in STOCKS if station in crns_full.columns]
+available_stations = [station for station in STOCKS if station in crns_primary.columns]
 # All stations are shown; the ones picked on the overview page come first.
 preferred = [s for s in get_shared_stations([]) if s in available_stations]
 selected_stations = preferred + [s for s in available_stations if s not in preferred]
@@ -177,21 +152,28 @@ station_name_map = {
     station: station_label(station, locs) for station in selected_stations
 }
 
-DEFAULT_METRICS_CRNS = ["SWC(CRNS)", "SWC(NEPTOON_UTS)", "D86"]
-DEFAULT_METRICS_MODEL = ["SWC(SWAP)"]
 DEFAULT_SMT_DEPTHS = ["weighted"] if "weighted" in smt_depths else smt_depths[:1]
 
-# Inside a group the source is already named by the group, so the sub-options only
-# carry what distinguishes them.
-SUB_LABELS = {
-    "SWC(CRNS)": "generelle Kalibrierung",
-    "SWC(CRNS_old)": "frühere Kalibrierung",
-    "SWC(NEPTOON_DES)": "Auswertung nach Desilets",
-    "SWC(NEPTOON_UTS)": "Auswertung nach UTS",
-    "D86": "Eindringtiefe",
-    "SWC(SWAP)": "tiefengewichtet",
-    **{metric: depth for metric, depth in SWAP_DEPTH_METRICS.items()},
-}
+
+def _metric_pills(label: str, options, key: str):
+    """Pill row for one group. A group with a single option needs no row - the
+    group checkbox already names it."""
+    defaults = [s.key for s in options if s.default]
+    if len(options) < 2:
+        return defaults
+    return st.pills(
+        label,
+        options=[s.key for s in options],
+        format_func=lambda k: get_series(k).pill,
+        default=defaults,
+        selection_mode="multi",
+        label_visibility="collapsed",
+        key=key,
+    )
+
+
+crns_options = series_for("crns")
+model_options = series_for("model")
 
 with st.expander("Datenauswahl", expanded=True):
     col_crns, col_model, col_other = st.columns(3)
@@ -199,15 +181,7 @@ with st.expander("Datenauswahl", expanded=True):
     with col_crns:
         use_crns = st.checkbox("**Messung via CRNS**", value=True, key="group_crns")
         crns_sel = (
-            st.pills(
-                "Auswertung",
-                options=CRNS_METRICS,
-                format_func=lambda m: SUB_LABELS[m],
-                default=DEFAULT_METRICS_CRNS,
-                selection_mode="multi",
-                label_visibility="collapsed",
-                key="metrics_crns",
-            )
+            _metric_pills("Auswertung", crns_options, "metrics_crns")
             if use_crns
             else []
         )
@@ -215,45 +189,40 @@ with st.expander("Datenauswahl", expanded=True):
     with col_model:
         use_model = st.checkbox("**Modell SWAP**", value=True, key="group_model")
         model_sel = (
-            st.pills(
-                "Tiefe der Modellwerte",
-                options=MODEL_METRICS,
-                format_func=lambda m: SUB_LABELS[m],
-                default=DEFAULT_METRICS_MODEL,
-                selection_mode="multi",
-                label_visibility="collapsed",
-                key="metrics_model",
-            )
+            _metric_pills("Tiefe der Modellwerte", model_options, "metrics_model")
             if use_model
             else []
         )
 
     with col_other:
-        use_smt = st.checkbox(
-            "**Bodenfeuchtesensoren (SMT)**", value=False, key="group_smt"
-        )
-        # The sensor depths are the group's sub-options - no extra metric pill.
-        selected_smt_depths = (
-            st.pills(
-                "Sensortiefen",
-                options=smt_depths,
-                format_func=smt_depth_label,
-                default=DEFAULT_SMT_DEPTHS,
-                selection_mode="multi",
-                label_visibility="collapsed",
-                key="metrics_smt_depths",
+        if smt_series:
+            use_smt = st.checkbox(
+                "**Bodenfeuchtesensoren (SMT)**", value=False, key="group_smt"
             )
-            if use_smt and smt_depths
-            else []
-        )
-        if use_smt and not smt_depths:
-            st.caption("Keine Sensortiefen in den Daten gefunden.")
+            # The sensor depths are the group's sub-options - no extra metric pill.
+            selected_smt_depths = (
+                st.pills(
+                    "Sensortiefen",
+                    options=smt_depths,
+                    format_func=smt_depth_label,
+                    default=DEFAULT_SMT_DEPTHS,
+                    selection_mode="multi",
+                    label_visibility="collapsed",
+                    key="metrics_smt_depths",
+                )
+                if use_smt and smt_depths
+                else []
+            )
+            if use_smt and not smt_depths:
+                st.caption("Keine Sensortiefen in den Daten gefunden.")
+        else:
+            selected_smt_depths = []
         st.markdown("**Schnee**")
         snow_mask_toggle()
 
     selected_metrics = list(crns_sel) + list(model_sel)
-    if selected_smt_depths:
-        selected_metrics.append("SWC(SMT)")
+    if selected_smt_depths and smt_series:
+        selected_metrics.append(smt_series.key)
     selected_smt_depths = list(selected_smt_depths)
 
 if not selected_metrics:
@@ -262,48 +231,32 @@ if not selected_metrics:
 
 smt_color_map = _smt_color_map(selected_smt_depths)
 
-# Fixed-depth SWAP means are fetched on demand; a missing file only drops its trace.
-swap_depth_frames = {}
-for metric, depth in SWAP_DEPTH_METRICS.items():
-    if metric not in selected_metrics:
+# One frame per selected series, in draw order. A source that is unreachable only
+# drops its own trace. reindex (not direct selection) so stations missing from a
+# source - e.g. WUS, which has no SWAP run - yield NaN columns, not a KeyError.
+frames = {}
+for series in series_for():
+    if series.key not in selected_metrics or series.group == "smt":
         continue
     try:
-        swap_depth_frames[metric] = load_time_series(SWAP_SM_DEPTHS[depth]).loc[
-            SWAP_START:
-        ]
+        frames[series.key] = frame_for(series).reindex(columns=selected_stations)
     except Exception:
-        st.warning(f"Modellwerte SWAP ({depth}) sind derzeit nicht verfügbar.")
+        st.warning(f"{series.label} ist derzeit nicht verfügbar.")
 
-metric_frames = {}
-# reindex (not direct selection) so stations missing from a source - e.g. WUS,
-# which has no SWAP run - yield NaN columns instead of a KeyError.
-if "SWC(CRNS)" in selected_metrics:
-    metric_frames["SWC(CRNS)"] = crns_full.reindex(columns=selected_stations)
-if "SWC(CRNS_old)" in selected_metrics:
-    metric_frames["SWC(CRNS_old)"] = crns_full_old.reindex(columns=selected_stations)
-if "SWC(SWAP)" in selected_metrics:
-    metric_frames["SWC(SWAP)"] = swap_full.reindex(columns=selected_stations)
-if "D86" in selected_metrics:
-    metric_frames["D86"] = d86_full.reindex(columns=selected_stations)
-if "SWC(SMT)" in selected_metrics:
+# SMT is one series with many columns - one per station and sensor depth - so it
+# keeps its own column selection rather than being reindexed onto the stations.
+smt_cols = []
+if smt_series and smt_series.key in selected_metrics:
     smt_cols = [
         f"{station}_SMT_{depth}"
         for station in selected_stations
         for depth in selected_smt_depths
         if f"{station}_SMT_{depth}" in SMT.columns
     ]
-    if smt_cols:
-        metric_frames["SWC(SMT)"] = SMT[smt_cols]
-if "SWC(NEPTOON_DES)" in selected_metrics:
-    metric_frames["SWC(NEPTOON_DES)"] = neptoon_des_full.reindex(
-        columns=selected_stations
-    )
-if "SWC(NEPTOON_UTS)" in selected_metrics:
-    metric_frames["SWC(NEPTOON_UTS)"] = neptoon_uts_full.reindex(
-        columns=selected_stations
-    )
-for metric, frame in swap_depth_frames.items():
-    metric_frames[metric] = frame.reindex(columns=selected_stations)
+
+metric_frames = dict(frames)
+if smt_cols:
+    metric_frames[smt_series.key] = SMT[smt_cols]
 
 if not metric_frames:
     st.warning("Für die aktuelle Variablenauswahl wurden keine Daten gefunden.")
@@ -419,34 +372,19 @@ for i, station in enumerate(selected_stations):
     # skip WUS
     if station == "WUS":
         continue
-    has_d86 = "D86" in selected_metrics
+    has_d86 = any(get_series(key).axis == "d86" for key in frames)
     fig = make_subplots(specs=[[{"secondary_y": has_d86}]])
 
-    station_frames = []
-    if "SWC(CRNS)" in selected_metrics and station in crns_full.columns:
-        station_frames.append(crns_full[[station]])
-    if "SWC(CRNS_old)" in selected_metrics and station in crns_full_old.columns:
-        station_frames.append(crns_full_old[[station]])
-    if "SWC(SWAP)" in selected_metrics and station in swap_full.columns:
-        station_frames.append(swap_full[[station]])
-    if "D86" in selected_metrics and station in d86_full.columns:
-        station_frames.append(d86_full[[station]])
-    smt_station_cols = []
-    if "SWC(SMT)" in selected_metrics:
-        smt_station_cols = [
-            f"{station}_SMT_{depth}"
-            for depth in selected_smt_depths
-            if f"{station}_SMT_{depth}" in SMT.columns
-        ]
-        if smt_station_cols:
-            station_frames.append(SMT[smt_station_cols])
-    if "SWC(NEPTOON_DES)" in selected_metrics and station in neptoon_des_full.columns:
-        station_frames.append(neptoon_des_full[[station]])
-    if "SWC(NEPTOON_UTS)" in selected_metrics and station in neptoon_uts_full.columns:
-        station_frames.append(neptoon_uts_full[[station]])
-    for frame in swap_depth_frames.values():
-        if station in frame.columns:
-            station_frames.append(frame[[station]])
+    station_frames = [
+        frame[[station]] for frame in frames.values() if station in frame.columns
+    ]
+    smt_station_cols = (
+        [col for col in smt_cols if col.startswith(f"{station}_SMT_")]
+        if smt_cols
+        else []
+    )
+    if smt_station_cols:
+        station_frames.append(SMT[smt_station_cols])
 
     if not station_frames:
         continue
@@ -459,139 +397,67 @@ for i, station in enumerate(selected_stations):
     station_start = station_valid.index.min()
     station_end = station_valid.index.max()
 
-    station_crns = _station_series(crns_full, station, station_start, station_end)
-    station_crns_old = _station_series(
-        crns_full_old, station, station_start, station_end
-    )
-    station_swap = _station_series(swap_full, station, station_start, station_end)
-    station_d86 = _station_series(d86_full, station, station_start, station_end)
-    station_neptoon_des = _station_series(
-        neptoon_des_full, station, station_start, station_end
-    )
-    station_neptoon_uts = _station_series(
-        neptoon_uts_full, station, station_start, station_end
-    )
+    # The calibration marker snaps onto the primary CRNS grid, whether or not that
+    # series is selected.
+    station_crns = _station_series(crns_primary, station, station_start, station_end)
     station_smt = (
         SMT.loc[station_start:station_end, smt_station_cols]
         if smt_station_cols
         else pd.DataFrame(index=station_valid.index)
     )
 
-    if "D86" in selected_metrics and station_d86 is not None:
-        fig.add_trace(
-            go.Scatter(
-                x=station_d86.index,
-                y=-station_d86,
-                mode="lines",
-                name=METRIC_LABELS["D86"],
-                fillcolor=FILL_D86,
-                line=dict(color=COLOR_D86, width=0),
-                fill="tozeroy",
-                opacity=ALPHA_D86,
-            ),
-            secondary_y=True,
-        )
-
-    if "SWC(SWAP)" in selected_metrics and station_swap is not None:
-        fig.add_trace(
-            go.Scatter(
-                x=station_swap.index,
-                y=to_plot_unit(station_swap),
-                mode="lines",
-                name=METRIC_LABELS["SWC(SWAP)"],
-                line=dict(color=COLOR_SWAP, dash="dash"),
-                opacity=TRACE_ALPHA,
-            ),
-            secondary_y=False,
-        )
-
-    for metric, frame in swap_depth_frames.items():
-        depth_series = _station_series(frame, station, station_start, station_end)
-        if depth_series is None or depth_series.dropna().empty:
+    # One pass over the registry in draw order; every special case - the downward
+    # D86 fill, the dashed model runs - is a field on the series itself.
+    for series in series_for():
+        if series.key not in frames:
             continue
+        values = _station_series(
+            frames[series.key], station, station_start, station_end
+        )
+        if values is None or values.dropna().empty:
+            continue
+        line = dict(color=series.color, dash=series.dash)
+        if series.line_width is not None:
+            line["width"] = series.line_width
         fig.add_trace(
             go.Scatter(
-                x=depth_series.index,
-                y=to_plot_unit(depth_series),
+                x=values.index,
+                y=-values if series.negate else to_plot_unit(values),
                 mode="lines",
-                name=METRIC_LABELS[metric],
-                line=dict(
-                    color=SWAP_DEPTH_COLORS.get(SWAP_DEPTH_METRICS[metric], "#807DBA"),
-                    dash="dash",
-                ),
-                opacity=TRACE_ALPHA,
+                name=series.label,  # terse, for the horizontal legend
+                hovertemplate=hover_template(series),  # spelled out, for the tooltip
+                line=line,
+                opacity=series.opacity,
+                fill=series.fill,
+                fillcolor=series.fill_color,
             ),
-            secondary_y=False,
+            secondary_y=(series.axis == "d86"),
         )
 
-    if "SWC(CRNS)" in selected_metrics and station_crns is not None:
-        fig.add_trace(
-            go.Scatter(
-                x=station_crns.index,
-                y=to_plot_unit(station_crns),
-                mode="lines",
-                name=METRIC_LABELS["SWC(CRNS)"],
-                line=dict(color=COLOR_CRNS),
-                opacity=TRACE_ALPHA,
-            ),
-            secondary_y=False,
-        )
-
-    if "SWC(CRNS_old)" in selected_metrics and station_crns_old is not None:
-        fig.add_trace(
-            go.Scatter(
-                x=station_crns_old.index,
-                y=to_plot_unit(station_crns_old),
-                mode="lines",
-                name=METRIC_LABELS["SWC(CRNS_old)"],
-                line=dict(color=COLOR_CRNS_old, dash="dash"),
-                opacity=TRACE_ALPHA,
-            ),
-            secondary_y=False,
-        )
-
-    if "SWC(NEPTOON_DES)" in selected_metrics and station_neptoon_des is not None:
-        fig.add_trace(
-            go.Scatter(
-                x=station_neptoon_des.index,
-                y=to_plot_unit(station_neptoon_des),
-                mode="lines",
-                name=METRIC_LABELS["SWC(NEPTOON_DES)"],
-                line=dict(color=COLOR_NEPTOON_DES),
-                opacity=TRACE_ALPHA,
-            ),
-            secondary_y=False,
-        )
-    if "SWC(NEPTOON_UTS)" in selected_metrics and station_neptoon_uts is not None:
-        fig.add_trace(
-            go.Scatter(
-                x=station_neptoon_uts.index,
-                y=to_plot_unit(station_neptoon_uts),
-                mode="lines",
-                name=METRIC_LABELS["SWC(NEPTOON_UTS)"],
-                line=dict(color=COLOR_NEPTOON_UTS),
-                opacity=TRACE_ALPHA,
-            ),
-            secondary_y=False,
-        )
-
-    if "SWC(SMT)" in selected_metrics and not station_smt.empty:
+    # The sensors are one trace per depth, shaded along a grey ramp.
+    if smt_series and not station_smt.empty:
         for smt_col in smt_station_cols:
             depth = smt_col.split("_SMT_", 1)[1]
+            depth_text = smt_depth_label(depth)
             fig.add_trace(
                 go.Scatter(
                     x=station_smt.index,
                     y=to_plot_unit(station_smt[smt_col]),
                     mode="lines",
-                    name=f"Bodenfeuchte (Sensor SMT, {smt_depth_label(depth)})",
-                    line=dict(color=smt_color_map.get(depth, "#737373"), dash="dot"),
-                    opacity=TRACE_ALPHA,
+                    name=f"SWC (SMT, {depth_text})",
+                    hovertemplate=hover_template(
+                        smt_series, f"{smt_series.hover}, {depth_text})"
+                    ),
+                    line=dict(
+                        color=smt_color_map.get(depth, "#737373"), dash=smt_series.dash
+                    ),
+                    opacity=smt_series.opacity,
                 ),
                 secondary_y=False,
             )
 
     fig.update_yaxes(title_text=moisture_label(), secondary_y=False)
-    if "D86" in selected_metrics:
+    if has_d86:
         fig.update_yaxes(
             title_text="Eindringtiefe (cm)", range=[-120, -0], secondary_y=True
         )

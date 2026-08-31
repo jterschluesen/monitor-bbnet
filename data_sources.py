@@ -1,9 +1,11 @@
 import io
+import os
 import urllib.request
 
 import pandas as pd
 import streamlit as st
 import plotly.graph_objects as go
+from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Optional
@@ -50,36 +52,10 @@ def _source_bytes(url: str, *, required: bool = True):
         raise RuntimeError(f"Quelle nicht erreichbar: {text}") from exc
 
 
-# Local FIles
-# from pathlib import Path
-# LOCAL_DATA_DIR = Path(__file__).resolve().parent / "data"
-#
-# URL_SWC_CRNS = str(LOCAL_DATA_DIR / "swc-from-crns.txt")
-# URL_SWC_SWAP = str(LOCAL_DATA_DIR / "swc-from-swap.txt")
-# URL_D86_CRNS = str(LOCAL_DATA_DIR / "d86-from-crns.txt")
-# URL_LOCATIONS = str(LOCAL_DATA_DIR / "metadata-locations.csv")
-
-# Remote A:
-# BASE_URL = "https://b2drop.eudat.eu/public.php/dav/files/efStHSPAM8HLc92"
-# URL_SWC_CRNS = f"{BASE_URL}/products/swc-from-crns.txt"
-# URL_SWC_SWAP = f"{BASE_URL}/products/swc-from-swap.txt"
-# URL_D86_CRNS = f"{BASE_URL}/products/d86-from-crns.txt"
-# URL_LOCATIONS = f"{BASE_URL}/metadata/metadata-locations.csv"
-
-# REMOTE NEW:
+# The public remote directory. Only series the online site may show have a URL
+# here; everything else is read from the local mirror - see the registry below.
 BASE_URL = "https://b2drop.eudat.eu//public.php/dav/files/yr5d6i72cCacYpH"
-# URL_SWC_CRNS = f"{BASE_URL}/swc-from-crns.txt"
-URL_SWC_CRNS = f"{BASE_URL}//swc-neptoon_DES_general.txt"
-URL_SWC_CRNS_Maik = f"{BASE_URL}/swc-from-crns.txt"
-URL_SWC_CRNS_old = f"{BASE_URL}/swc-from-crns_oldpreproc.txt"
-URL_SWC_SWAP = f"{BASE_URL}/swc-from-swap.txt"
-URL_D86_CRNS = f"{BASE_URL}/d86-from-crns.txt"
 URL_LOCATIONS = f"{BASE_URL}/metadata-locations.csv"
-URL_SWC_SMT = f"{BASE_URL}/vwc-from-smt_daily.txt"
-URL_SWC_NEPTOON_DES = f"{BASE_URL}/swc-neptoon_DES.txt"
-URL_SWC_NEPTOON_UTS = f"{BASE_URL}/swc-neptoon_UTS.txt"
-URL_SWC_NEPTOON_DES_old = f"{BASE_URL}/swc-neptoon_DES_oldpreproc.txt"
-URL_SWC_NEPTOON_UTS_old = f"{BASE_URL}/swc-neptoon_UTS_oldpreproc.txt"
 URL_SNOW_FLAGS = f"{BASE_URL}/snow-flags.csv"
 URL_SWAP_SM_0_30 = f"{BASE_URL}/swc-from-swap-mean-0_30.txt"
 URL_SWAP_SM_0_100 = f"{BASE_URL}/swc-from-swap-mean-0_100.txt"
@@ -94,6 +70,323 @@ SWAP_SM_DEPTHS = {
     "0–1 m": URL_SWAP_SM_0_100,
     "0–2 m": URL_SWAP_SM_0_200,
 }
+
+# The SWAP runs reach back to 1990, the CRNS record starts in 2020. Clip the model
+# series so the long simulation history does not stretch the station plots.
+SWAP_START = pd.Timestamp("2024-01-01")
+
+
+# --- Profiles ----------------------------------------------------------------
+# Which series are plotted is a runtime setting, not a branch. public < internal <
+# dev; each profile sees its own tier and everything below it.
+LOCAL_DATA_DIR = Path(__file__).resolve().parent / "data"
+PROFILE_LEVELS = {"public": 0, "internal": 1, "dev": 2}
+# The CRNS series that defines the station list and the overview page, in every
+# profile, so the pages never disagree about what "CRNS" means.
+PRIMARY_CRNS = "crns_uts"
+
+
+def _read_profile() -> str:
+    """BB_PROFILE env var, else `profile` in secrets.toml, else the safe default.
+
+    Defaults to "public": a misconfigured deployment must show less, never more.
+    """
+    value = os.getenv("BB_PROFILE", "")
+    if not value:
+        try:
+            value = str(st.secrets.get("profile", ""))
+        except Exception:
+            value = ""  # no secrets.toml at all
+    value = value.strip().lower()
+    return value if value in PROFILE_LEVELS else "public"
+
+
+PROFILE = _read_profile()
+_LEVEL = PROFILE_LEVELS[PROFILE]
+# Dev convenience only: serve *public* series from data/ too, for offline work.
+# Never widens what is visible and never makes a hidden series remote.
+PREFER_LOCAL = os.getenv("BB_DATA_LOCAL", "") == "1"
+
+
+@dataclass(frozen=True)
+class Series:
+    key: str  # stable id used in session state and selections
+    label: str  # terse legend text, e.g. "SWC (CRNS, UTS)"
+    pill: str  # shortest form, for its group's selector row
+    hover: str  # spelled-out German sentence for the tooltip
+    group: str  # "crns" | "model" | "smt"
+    tier: str  # "public" | "internal" | "dev"
+    remote: Optional[str] = None  # set ONLY when tier == "public"
+    local: Optional[str] = None  # file under data/, required when tier != "public"
+    color: Optional[str] = None
+    dash: Optional[str] = None
+    axis: str = "swc"  # "swc" (primary) | "d86" (secondary)
+    unit: str = "cm³/cm³"  # shown in the hover box
+    order: int = 50  # draw order; low = drawn first = behind
+    opacity: float = 0.8
+    fill: Optional[str] = None
+    fill_color: Optional[str] = None
+    line_width: Optional[int] = None
+    negate: bool = False  # D86 is plotted downward
+    snow_masked: bool = False  # blank out CRNS-derived values under snow
+    clip_start: bool = False  # clip the long SWAP history to SWAP_START
+    default: bool = False  # preselected in its pill row
+
+
+def source(s: Series) -> str:
+    """Where this series is read from. A non-public series is never remote."""
+    if s.tier != "public":
+        return str(LOCAL_DATA_DIR / s.local)
+    if PREFER_LOCAL and s.local and (LOCAL_DATA_DIR / s.local).exists():
+        return str(LOCAL_DATA_DIR / s.local)
+    return s.remote
+
+
+# --- The series registry -----------------------------------------------------
+# The CRNS family varies along three axes - Kalibrierung (lokal/generell),
+# Auswertung (UTS/Desilets) and Vorverarbeitung (neu/alt/M) - so every name says
+# which combination it is. All hues are from the Okabe-Ito palette.
+_CRNS = "Bodenfeuchte (Messung via CRNS"
+
+SERIES = [
+    # --- Eindringtiefe: drawn first so its fill reads as background -----------
+    Series(
+        "d86",
+        "D86 (CRNS)",
+        "Eindringtiefe",
+        f"{_CRNS}, Eindringtiefe der Messung)",
+        "crns",
+        "public",
+        remote=f"{BASE_URL}/d86-from-crns.txt",
+        local="d86-from-crns.txt",
+        color="#5A2A00",  # brown
+        axis="d86",
+        unit="cm",
+        order=10,
+        # Kept faint so the penetration depth reads as background, not a measurement.
+        opacity=0.45,
+        fill="tozeroy",
+        fill_color="rgba(90, 42, 0, 0.08)",
+        line_width=0,
+        negate=True,
+        snow_masked=True,
+        default=True,
+    ),
+    Series(
+        "d86_neptoon",
+        "D86 (CRNS, neptoon)",
+        "Eindringtiefe (neptoon)",
+        f"{_CRNS}, Eindringtiefe, Auswertung mit neptoon)",
+        "crns",
+        "dev",
+        local="d86-from-neptoon.txt",
+        color="#B07A4A",
+        dash="dot",
+        axis="d86",
+        unit="cm",
+        order=11,
+        opacity=0.45,
+        line_width=1,
+        negate=True,
+        snow_masked=True,
+    ),
+    # --- Modell SWAP: one purple family, light = shallow, dark = deep ---------
+    Series(
+        "swap",
+        "SWC (SWAP)",
+        "tiefengewichtet",
+        "Bodenfeuchte (Modell SWAP, tiefengewichtet über die Eindringtiefe)",
+        "model",
+        "public",
+        remote=f"{BASE_URL}/swc-from-swap.txt",
+        local="swc-from-swap.txt",
+        color="#3F007D",
+        dash="dash",
+        order=20,
+        clip_start=True,
+        default=True,
+    ),
+    Series(
+        "swap_0_30",
+        "SWC (SWAP, 0–30 cm)",
+        "0–30 cm",
+        "Bodenfeuchte (Modell SWAP, Mittel 0–30 cm)",
+        "model",
+        "public",
+        remote=URL_SWAP_SM_0_30,
+        local="swc-from-swap-mean-0_30.txt",
+        color="#BCBDDC",
+        dash="dash",
+        order=21,
+        clip_start=True,
+    ),
+    Series(
+        "swap_0_100",
+        "SWC (SWAP, 0–1 m)",
+        "0–1 m",
+        "Bodenfeuchte (Modell SWAP, Mittel 0–1 m)",
+        "model",
+        "public",
+        remote=URL_SWAP_SM_0_100,
+        local="swc-from-swap-mean-0_100.txt",
+        color="#807DBA",
+        dash="dash",
+        order=22,
+        clip_start=True,
+    ),
+    Series(
+        "swap_0_200",
+        "SWC (SWAP, 0–2 m)",
+        "0–2 m",
+        "Bodenfeuchte (Modell SWAP, Mittel 0–2 m)",
+        "model",
+        "public",
+        remote=URL_SWAP_SM_0_200,
+        local="swc-from-swap-mean-0_200.txt",
+        color="#54278F",
+        dash="dash",
+        order=23,
+        clip_start=True,
+    ),
+    # --- Messung via CRNS, drawn over the model -------------------------------
+    Series(
+        "crns_uts",
+        "SWC (CRNS, UTS)",
+        "UTS, lokal",
+        f"{_CRNS}, lokale Kalibrierung mit UTS)",
+        "crns",
+        "public",
+        remote=f"{BASE_URL}/swc-neptoon_UTS.txt",
+        local="swc-neptoon_UTS.txt",
+        color="#0072B2",  # blue
+        order=60,
+        snow_masked=True,
+        default=True,
+    ),
+    Series(
+        "crns_des",
+        "SWC (CRNS, Desilets)",
+        "Desilets, lokal",
+        f"{_CRNS}, lokale Kalibrierung mit Desilets)",
+        "crns",
+        "internal",
+        local="swc-neptoon_DES.txt",
+        color="#56B4E9",  # sky blue
+        order=61,
+        snow_masked=True,
+    ),
+    Series(
+        "crns_des_gen",
+        "SWC (CRNS, Desilets, generell)",
+        "Desilets, generell",
+        f"{_CRNS}, generelle Kalibrierung mit Desilets)",
+        "crns",
+        "internal",
+        local="swc-neptoon_DES_general.txt",
+        color="#E69F00",  # orange
+        order=62,
+        snow_masked=True,
+    ),
+    Series(
+        "crns_des_gen_m",
+        "SWC (CRNS, Desilets, generell, M)",
+        "Desilets, generell (M)",
+        f"{_CRNS}, generelle Kalibrierung mit Desilets,  M)",
+        "crns",
+        "dev",
+        local="swc-from-crns.txt",
+        color="#F0C060",
+        order=63,
+        snow_masked=True,
+    ),
+    Series(
+        "crns_uts_alt",
+        "SWC (CRNS, UTS, alt)",
+        "UTS (alt)",
+        f"{_CRNS}, lokale Kalibrierung mit UTS, altes preprocessing)",
+        "crns",
+        "dev",
+        local="swc-neptoon_UTS_oldpreproc.txt",
+        color="#940051",
+        # dash="dash",
+        order=70,
+        snow_masked=True,
+    ),
+    Series(
+        "crns_des_alt",
+        "SWC (CRNS, Desilets, alt)",
+        "Desilets (alt)",
+        f"{_CRNS}, lokale Kalibrierung mit Desilets, altes preprocessing)",
+        "crns",
+        "dev",
+        local="swc-neptoon_DES_oldpreproc.txt",
+        color="#AC3898",
+        # dash="dash",
+        order=71,
+        snow_masked=True,
+    ),
+    Series(
+        "crns_des_gen_m_alt",
+        "SWC (CRNS, Desilets, generell, M, alt)",
+        "Desilets, generell (M, alt)",
+        f"{_CRNS}, generelle Kalibrierung mit Desilets, M, altes preprocessing)",
+        "crns",
+        "dev",
+        local="swc-from-crns_oldpreproc.txt",
+        color="#CC79A7",  # reddish purple
+        # dash="dash",
+        order=72,
+        snow_masked=True,
+    ),
+    # --- Bodenfeuchtesensoren -------------------------------------------------
+    # Traces are one per depth, coloured from a grey ramp; no single colour here.
+    Series(
+        "smt",
+        "SWC (SMT)",
+        "Sensoren",
+        "Bodenfeuchte (Sensoren SMT",
+        "smt",
+        "internal",
+        local="vwc-from-smt_daily.txt",
+        dash="dot",
+        order=80,
+    ),
+]
+
+_BY_KEY = {s.key: s for s in SERIES}
+
+
+def _available(s: Series) -> bool:
+    # A hidden series whose local mirror is absent is dropped rather than raising,
+    # so a wrong profile degrades instead of breaking the page.
+    return s.tier == "public" or (LOCAL_DATA_DIR / s.local).exists()
+
+
+def series_for(group: Optional[str] = None):
+    """Visible series for the active profile, in draw order."""
+    out = [s for s in SERIES if PROFILE_LEVELS[s.tier] <= _LEVEL and _available(s)]
+    if group is not None:
+        out = [s for s in out if s.group == group]
+    return sorted(out, key=lambda s: s.order)
+
+
+def get_series(key: str) -> Series:
+    return _BY_KEY[key]
+
+
+def load_series(key: str) -> pd.DataFrame:
+    """Frame for one series. Delegates to the cached load_time_series."""
+    return load_time_series(source(get_series(key)))
+
+
+def hover_template(s: Series, label: Optional[str] = None) -> str:
+    """Terse in the legend, spelled out in the tooltip."""
+    digits = 1 if s.axis == "d86" else 3
+    text = label if label is not None else s.hover
+    return (
+        f"<b>{text}</b><br>%{{x|%d.%m.%Y}}<br>%{{y:.{digits}f}} {s.unit}<extra></extra>"
+    )
+
 
 STOCKS = [
     "BEE",
