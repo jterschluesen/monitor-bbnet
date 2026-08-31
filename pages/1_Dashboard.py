@@ -68,7 +68,7 @@ construction_warning()
 
 st.title("Bodenwassermonitor Brandenburg")
 st.write(
-    "Der Bodenwassermonitor Brandenburg dient der Darstellung von gemessenen und simulierten Bodenfeuchtedaten, verschiedener Standorte in Brandenburg, sowir daraus abgeleiteter Ergebnisse zu den Themen Bodenfeuchte-Monitoring und Grundwasserneubildung in Brandenburg. "
+    "Der Bodenwassermonitor Brandenburg dient der Darstellung von gemessenen und simulierten Bodenfeuchtedaten, verschiedener Standorte in Brandenburg, sowie daraus abgeleiteter Ergebnisse zu den Themen Bodenfeuchte-Monitoring und Grundwasserneubildung in Brandenburg. "
     'Die Universität Potsdam kooperiert dazu mit dem Land Brandenburg, dem Helmholtz-Zentrum für Umweltforschung und dem Climate Change Center Berlin-Brandenburg, unter anderem in den vom Land Brandenburg geförderten Projekten “Einfluss des Klimawandels auf die Grundwasserneubildung in Brandenburg: Anpassungsbedarfe und Hebelpunkte” und "Klimafolgen- und Anpassung Brandenburg: Untersuchungen zum Landschaftswasserhaushalt und Starkregenrisikomanagement".'
 )
 st.write(
