@@ -1185,10 +1185,10 @@ SMI_BANDS = [
     (0.98, 1.01, "exceptional_wet"),
 ]
 SMI_BAND_LABELS = {
-    "exceptional": "außergewöhnliche Dürre",
-    "extreme": "extreme Dürre",
-    "severe": "schwere Dürre",
-    "moderate": "moderate Dürre",
+    "exceptional": "außergewöhnliche Trockenheit",
+    "extreme": "extreme Trockenheit",
+    "severe": "schwere Trockenheit",
+    "moderate": "moderate Trockenheit",
     "abnormally_dry": "ungewöhnlich trocken",
     "normal": "normal",
     "abnormally_wet": "ungewöhnlich nass",
