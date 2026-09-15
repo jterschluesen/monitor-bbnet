@@ -26,6 +26,7 @@ from data_sources import (
     HORIZON_MAP,
     STOCKS,
     PRIMARY_CRNS,
+    PRIMARY_D86,
     UNITS,
     construction_warning,
     URL_LOCATIONS,
@@ -228,7 +229,7 @@ if not tickers:
 # data = load_data(dtimes, STOCKS, rho=0.7, seed=42)
 data2_full = load_series(PRIMARY_CRNS)
 sim2_full = load_series("swap_0_30")  # use 0-30cm instead of weighted
-d862_full = load_series("d86")
+d862_full = load_series(PRIMARY_D86)
 snow_flags = load_snow_flags(URL_SNOW_FLAGS)
 # Shade exactly the phases of the stations on screen, so the band matches the gaps
 # that masking leaves in the curves.
@@ -834,10 +835,6 @@ with st.expander("Download", expanded=False):
             )
             st.session_state.download_start = max(download_min_date, candidate_start)
 
-    if download_horizon_days is None:
-        st.session_state.download_start = download_min_date
-        st.session_state.download_end = download_max_date
-
     if st.session_state.download_start < download_min_date:
         st.session_state.download_start = download_min_date
     if st.session_state.download_start > download_max_date:
@@ -849,18 +846,26 @@ with st.expander("Download", expanded=False):
     if st.session_state.download_start > st.session_state.download_end:
         st.session_state.download_end = st.session_state.download_start
 
+    def _sync_download_dates():
+        # Own start/end: the horizon pill no longer defines the window, so it is
+        # deselected instead of resetting the dates on every rerun.
+        st.session_state.download_horizon = None
+        st.session_state.download_applied_horizon = None
+
     download_cols = st.columns(2)
     download_cols[0].date_input(
         "Download Start",
         min_value=download_min_date,
         max_value=download_max_date,
         key="download_start",
+        on_change=_sync_download_dates,
     )
     download_cols[1].date_input(
         "Download Ende",
         min_value=download_min_date,
         max_value=download_max_date,
         key="download_end",
+        on_change=_sync_download_dates,
     )
 
     download_start = pd.to_datetime(st.session_state.download_start)

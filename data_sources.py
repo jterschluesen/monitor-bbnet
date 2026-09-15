@@ -71,9 +71,10 @@ SWAP_SM_DEPTHS = {
     "0–2 m": URL_SWAP_SM_0_200,
 }
 
-# The SWAP runs reach back to 1990, the CRNS record starts in 2020. Clip the model
-# series so the long simulation history does not stretch the station plots.
-SWAP_START = pd.Timestamp("2024-01-01")
+# The SWAP runs reach back to 1950, the CRNS record starts in 2020. Clip the model
+# series to the start of the SMI reference period, so the full series shows the
+# same history the drought classification is built on.
+SWAP_START = pd.Timestamp("1994-01-01")
 
 
 # --- Profiles ----------------------------------------------------------------
@@ -84,6 +85,8 @@ PROFILE_LEVELS = {"public": 0, "internal": 1, "dev": 2}
 # The CRNS series that defines the station list and the overview page, in every
 # profile, so the pages never disagree about what "CRNS" means.
 PRIMARY_CRNS = "crns_uts"
+# The Eindringtiefe every page plots and offers for download.
+PRIMARY_D86 = "d86_neptoon"
 
 
 def _read_profile() -> str:
@@ -151,14 +154,14 @@ _CRNS = "Bodenfeuchte (Messung via CRNS"
 SERIES = [
     # --- Eindringtiefe: drawn first so its fill reads as background -----------
     Series(
-        "d86",
+        "d86_neptoon",
         "D86 (CRNS)",
         "Eindringtiefe",
-        f"{_CRNS}, Eindringtiefe der Messung)",
+        f"{_CRNS}, Eindringtiefe der Messung, Auswertung mit neptoon)",
         "crns",
         "public",
-        remote=f"{BASE_URL}/d86-from-crns.txt",
-        local="d86-from-crns.txt",
+        remote=f"{BASE_URL}/d86-from-neptoon.txt",
+        local="d86-from-neptoon.txt",
         color="#5A2A00",  # brown
         axis="d86",
         unit="cm",
@@ -173,13 +176,13 @@ SERIES = [
         default=True,
     ),
     Series(
-        "d86_neptoon",
-        "D86 (CRNS, neptoon)",
-        "Eindringtiefe (neptoon)",
-        f"{_CRNS}, Eindringtiefe, Auswertung mit neptoon)",
+        "d86",
+        "D86 (CRNS, M)",
+        "Eindringtiefe (M)",
+        f"{_CRNS}, Eindringtiefe, Auswertung mit M)",
         "crns",
         "dev",
-        local="d86-from-neptoon.txt",
+        local="d86-from-crns.txt",
         color="#B07A4A",
         dash="dot",
         axis="d86",
