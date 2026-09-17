@@ -8,7 +8,6 @@ from data_sources import (
     HORIZON_MAP,
     PRIMARY_CRNS,
     STOCKS,
-    SWAP_START,
     construction_warning,
     URL_LOCATIONS,
     URL_SNOW_FLAGS,
@@ -121,8 +120,6 @@ snow_flags = load_snow_flags(URL_SNOW_FLAGS)
 def frame_for(series):
     """Full frame for one registry entry, with its per-series treatment applied."""
     df = load_series(series.key)
-    if series.clip_start:
-        df = df.loc[SWAP_START:]
     if series.snow_masked:
         # Snow on the ground biases the neutron count, so every CRNS-derived series
         # is blanked out during a snow phase; model and in-soil sensors stay untouched.

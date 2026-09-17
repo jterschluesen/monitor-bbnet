@@ -60,17 +60,15 @@ def _source_bytes(url: str, *, required: bool = True):
 BASE_URL = "https://b2drop.eudat.eu//public.php/dav/files/yr5d6i72cCacYpH"
 URL_LOCATIONS = f"{BASE_URL}/metadata-locations.csv"
 URL_SNOW_FLAGS = f"{BASE_URL}/snow-flags.csv"
-URL_SWAP_SM_0_30 = f"{BASE_URL}/swc-from-swap-mean-0_30.txt"
-URL_SWAP_SM_0_100 = f"{BASE_URL}/swc-from-swap-mean-0_100.txt"
-URL_SWAP_SM_0_200 = f"{BASE_URL}/swc-from-swap-mean-0_200.txt"
 # Per-station daily water balance + the day-of-year normals, one public directory
 # of its own; the files are named in the water-balance section further down.
 URL_BALANCE_DIR = "https://b2drop.eudat.eu//public.php/dav/files/7dHbNH26QT2nCef"
-# SWAP soil-moisture depth averages overlaid on the SMI page's secondary axis.
+# SWAP soil-moisture depth averages overlaid on the SMI page's secondary axis,
+# as keys of the series registry below.
 SWAP_SM_DEPTHS = {
-    "0–30 cm": URL_SWAP_SM_0_30,
-    "0–1 m": URL_SWAP_SM_0_100,
-    "0–2 m": URL_SWAP_SM_0_200,
+    "0–30 cm": "swap_0_30",
+    "0–1 m": "swap_0_100",
+    "0–2 m": "swap_0_200",
 }
 
 # The SWAP runs reach back to 1950, the CRNS record starts in 2020. Clip the model
@@ -119,7 +117,7 @@ class Series:
     label: str  # terse legend text, e.g. "SWC (CRNS, UTS)"
     pill: str  # shortest form, for its group's selector row
     hover: str  # spelled-out German sentence for the tooltip
-    group: str  # "crns" | "model" | "smt"
+    group: str  # "crns" | "model" | "smt" | "smi"
     tier: str  # "public" | "internal" | "dev"
     remote: Optional[str] = None  # set ONLY when tier == "public"
     local: Optional[str] = None  # file under data/, required when tier != "public"
@@ -218,7 +216,7 @@ SERIES = [
         "Bodenfeuchte (Modell SWAP, Mittel 0–30 cm)",
         "model",
         "public",
-        remote=URL_SWAP_SM_0_30,
+        remote=f"{BASE_URL}/swc-from-swap-mean-0_30.txt",
         local="swc-from-swap-mean-0_30.txt",
         color="#BCBDDC",
         dash="dash",
@@ -232,7 +230,7 @@ SERIES = [
         "Bodenfeuchte (Modell SWAP, Mittel 0–1 m)",
         "model",
         "public",
-        remote=URL_SWAP_SM_0_100,
+        remote=f"{BASE_URL}/swc-from-swap-mean-0_100.txt",
         local="swc-from-swap-mean-0_100.txt",
         color="#807DBA",
         dash="dash",
@@ -246,7 +244,7 @@ SERIES = [
         "Bodenfeuchte (Modell SWAP, Mittel 0–2 m)",
         "model",
         "public",
-        remote=URL_SWAP_SM_0_200,
+        remote=f"{BASE_URL}/swc-from-swap-mean-0_200.txt",
         local="swc-from-swap-mean-0_200.txt",
         color="#54278F",
         dash="dash",
@@ -358,6 +356,28 @@ SERIES = [
     ),
 ]
 
+# --- Bodenfeuchteindex -------------------------------------------------------
+# Not plotted from the pill rows; registered so the SMI page reads its files by the
+# same rules. Derived from the SWAP run, so clipped like it. Per depth: the full
+# history (``_lt``) and the lowest / highest resolvable SMI per day (see
+# ``smi_censoring``).
+_SMI_FILES = {"": "_lt", "_first_step": "_first_step", "_last_step": "_last_step"}
+SERIES += [
+    Series(
+        f"smi_{depth}{key_suffix}",
+        f"SMI ({depth}{key_suffix})",
+        depth,
+        f"Bodenfeuchteindex (Modell SWAP, {depth})",
+        "smi",
+        "public",
+        remote=f"{BASE_URL}/smi_{depth}{file_suffix}.txt",
+        unit="",
+        clip_start=True,
+    )
+    for depth in ("0_30cm", "0_100cm", "0_200cm")
+    for key_suffix, file_suffix in _SMI_FILES.items()
+]
+
 _BY_KEY = {s.key: s for s in SERIES}
 
 
@@ -380,8 +400,10 @@ def get_series(key: str) -> Series:
 
 
 def load_series(key: str) -> pd.DataFrame:
-    """Frame for one series. Delegates to the cached load_time_series."""
-    return load_time_series(source(get_series(key)))
+    """Frame for one series, clipped to SWAP_START where the series asks for it."""
+    s = get_series(key)
+    df = load_time_series(source(s))
+    return df.loc[SWAP_START:] if s.clip_start else df
 
 
 def hover_template(s: Series, label: Optional[str] = None) -> str:
@@ -1129,22 +1151,16 @@ SMI_SWAP_DEPTH = {
 SMI_STEP_TOL = 1e-8
 
 
-def _smi_url(depth_key: str, suffix: str = "") -> str:
-    return f"{BASE_URL}/smi_{depth_key}{suffix}.txt"
-
-
-@st.cache_data(ttl=12 * 3600)
 def load_smi(depth_key: str) -> pd.DataFrame:
-    """Full SMI history for one depth."""
-    return load_time_series(_smi_url(depth_key, "_lt"))
+    """SMI history for one depth, from SWAP_START on."""
+    return load_series(f"smi_{depth_key}")
 
 
-@st.cache_data(ttl=12 * 3600)
 def load_smi_steps(depth_key: str):
     """(first_step, last_step): lowest / highest resolvable SMI per station and day."""
     return (
-        load_time_series(_smi_url(depth_key, "_first_step")),
-        load_time_series(_smi_url(depth_key, "_last_step")),
+        load_series(f"smi_{depth_key}_first_step"),
+        load_series(f"smi_{depth_key}_last_step"),
     )
 
 

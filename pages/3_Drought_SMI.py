@@ -27,9 +27,9 @@ from data_sources import (
     get_shared_stations,
     glossary_expander,
     load_locations,
+    load_series,
     load_smi,
     load_smi_steps,
-    load_time_series,
     moisture_label,
     selected_max_date,
     selected_min_date,
@@ -455,7 +455,7 @@ for station in sel_stations:
 # Optional SWAP soil-moisture overlay (same depth as the SMI) on the secondary axis.
 if show_swap:
     try:
-        swap_sm = load_time_series(SWAP_SM_DEPTHS[swap_label])
+        swap_sm = load_series(SWAP_SM_DEPTHS[swap_label])
     except Exception:
         swap_sm = pd.DataFrame()
         st.warning(f"Modellwerte SWAP ({swap_label}) sind derzeit nicht verfügbar.")
