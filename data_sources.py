@@ -33,7 +33,10 @@ def _source_bytes(url: str, *, required: bool = True):
     """
     text = str(url)
     if not text.lower().startswith(("http://", "https://")):
-        return Path(text).read_bytes()
+        path = Path(text)
+        if not required and not path.exists():
+            return None
+        return path.read_bytes()
     try:
         with urllib.request.urlopen(text, timeout=REMOTE_TIMEOUT) as response:
             return response.read()
@@ -57,23 +60,21 @@ def _source_bytes(url: str, *, required: bool = True):
 BASE_URL = "https://b2drop.eudat.eu//public.php/dav/files/yr5d6i72cCacYpH"
 URL_LOCATIONS = f"{BASE_URL}/metadata-locations.csv"
 URL_SNOW_FLAGS = f"{BASE_URL}/snow-flags.csv"
-URL_SWAP_SM_0_30 = f"{BASE_URL}/swc-from-swap-mean-0_30.txt"
-URL_SWAP_SM_0_100 = f"{BASE_URL}/swc-from-swap-mean-0_100.txt"
-URL_SWAP_SM_0_200 = f"{BASE_URL}/swc-from-swap-mean-0_200.txt"
-# Per-station daily water balance + the 1994-2024 day-of-year normals.
-
-URL_BALANCE_NORMAL_DIR = "https://b2drop.eudat.eu//public.php/dav/files/7dHbNH26QT2nCef"
-URL_WATER_BALANCE = f"{URL_BALANCE_NORMAL_DIR}/{{station}}.csv"
-# SWAP soil-moisture depth averages overlaid on the SMI page's secondary axis.
+# Per-station daily water balance + the day-of-year normals, one public directory
+# of its own; the files are named in the water-balance section further down.
+URL_BALANCE_DIR = "https://b2drop.eudat.eu//public.php/dav/files/7dHbNH26QT2nCef"
+# SWAP soil-moisture depth averages overlaid on the SMI page's secondary axis,
+# as keys of the series registry below.
 SWAP_SM_DEPTHS = {
-    "0–30 cm": URL_SWAP_SM_0_30,
-    "0–1 m": URL_SWAP_SM_0_100,
-    "0–2 m": URL_SWAP_SM_0_200,
+    "0–30 cm": "swap_0_30",
+    "0–1 m": "swap_0_100",
+    "0–2 m": "swap_0_200",
 }
 
-# The SWAP runs reach back to 1990, the CRNS record starts in 2020. Clip the model
-# series so the long simulation history does not stretch the station plots.
-SWAP_START = pd.Timestamp("2024-01-01")
+# The SWAP runs reach back to 1950, the CRNS record starts in 2020. Clip the model
+# series to the start of the SMI reference period, so the full series shows the
+# same history the drought classification is built on.
+SWAP_START = pd.Timestamp("1994-01-01")
 
 
 # --- Profiles ----------------------------------------------------------------
@@ -84,6 +85,8 @@ PROFILE_LEVELS = {"public": 0, "internal": 1, "dev": 2}
 # The CRNS series that defines the station list and the overview page, in every
 # profile, so the pages never disagree about what "CRNS" means.
 PRIMARY_CRNS = "crns_uts"
+# The Eindringtiefe every page plots and offers for download.
+PRIMARY_D86 = "d86_neptoon"
 
 
 def _read_profile() -> str:
@@ -114,7 +117,7 @@ class Series:
     label: str  # terse legend text, e.g. "SWC (CRNS, UTS)"
     pill: str  # shortest form, for its group's selector row
     hover: str  # spelled-out German sentence for the tooltip
-    group: str  # "crns" | "model" | "smt"
+    group: str  # "crns" | "model" | "smt" | "smi"
     tier: str  # "public" | "internal" | "dev"
     remote: Optional[str] = None  # set ONLY when tier == "public"
     local: Optional[str] = None  # file under data/, required when tier != "public"
@@ -151,14 +154,14 @@ _CRNS = "Bodenfeuchte (Messung via CRNS"
 SERIES = [
     # --- Eindringtiefe: drawn first so its fill reads as background -----------
     Series(
-        "d86",
+        "d86_neptoon",
         "D86 (CRNS)",
         "Eindringtiefe",
-        f"{_CRNS}, Eindringtiefe der Messung)",
+        f"{_CRNS}, Eindringtiefe der Messung, Auswertung mit neptoon)",
         "crns",
         "public",
-        remote=f"{BASE_URL}/d86-from-crns.txt",
-        local="d86-from-crns.txt",
+        remote=f"{BASE_URL}/d86-from-neptoon.txt",
+        local="d86-from-neptoon.txt",
         color="#5A2A00",  # brown
         axis="d86",
         unit="cm",
@@ -173,13 +176,13 @@ SERIES = [
         default=True,
     ),
     Series(
-        "d86_neptoon",
-        "D86 (CRNS, neptoon)",
-        "Eindringtiefe (neptoon)",
-        f"{_CRNS}, Eindringtiefe, Auswertung mit neptoon)",
+        "d86",
+        "D86 (CRNS, M)",
+        "Eindringtiefe (M)",
+        f"{_CRNS}, Eindringtiefe, Auswertung mit M)",
         "crns",
         "dev",
-        local="d86-from-neptoon.txt",
+        local="d86-from-crns.txt",
         color="#B07A4A",
         dash="dot",
         axis="d86",
@@ -213,7 +216,7 @@ SERIES = [
         "Bodenfeuchte (Modell SWAP, Mittel 0–30 cm)",
         "model",
         "public",
-        remote=URL_SWAP_SM_0_30,
+        remote=f"{BASE_URL}/swc-from-swap-mean-0_30.txt",
         local="swc-from-swap-mean-0_30.txt",
         color="#BCBDDC",
         dash="dash",
@@ -227,7 +230,7 @@ SERIES = [
         "Bodenfeuchte (Modell SWAP, Mittel 0–1 m)",
         "model",
         "public",
-        remote=URL_SWAP_SM_0_100,
+        remote=f"{BASE_URL}/swc-from-swap-mean-0_100.txt",
         local="swc-from-swap-mean-0_100.txt",
         color="#807DBA",
         dash="dash",
@@ -241,7 +244,7 @@ SERIES = [
         "Bodenfeuchte (Modell SWAP, Mittel 0–2 m)",
         "model",
         "public",
-        remote=URL_SWAP_SM_0_200,
+        remote=f"{BASE_URL}/swc-from-swap-mean-0_200.txt",
         local="swc-from-swap-mean-0_200.txt",
         color="#54278F",
         dash="dash",
@@ -353,6 +356,28 @@ SERIES = [
     ),
 ]
 
+# --- Bodenfeuchteindex -------------------------------------------------------
+# Not plotted from the pill rows; registered so the SMI page reads its files by the
+# same rules. Derived from the SWAP run, so clipped like it. Per depth: the full
+# history (``_lt``) and the lowest / highest resolvable SMI per day (see
+# ``smi_censoring``).
+_SMI_FILES = {"": "_lt", "_first_step": "_first_step", "_last_step": "_last_step"}
+SERIES += [
+    Series(
+        f"smi_{depth}{key_suffix}",
+        f"SMI ({depth}{key_suffix})",
+        depth,
+        f"Bodenfeuchteindex (Modell SWAP, {depth})",
+        "smi",
+        "public",
+        remote=f"{BASE_URL}/smi_{depth}{file_suffix}.txt",
+        unit="",
+        clip_start=True,
+    )
+    for depth in ("0_30cm", "0_100cm", "0_200cm")
+    for key_suffix, file_suffix in _SMI_FILES.items()
+]
+
 _BY_KEY = {s.key: s for s in SERIES}
 
 
@@ -375,8 +400,10 @@ def get_series(key: str) -> Series:
 
 
 def load_series(key: str) -> pd.DataFrame:
-    """Frame for one series. Delegates to the cached load_time_series."""
-    return load_time_series(source(get_series(key)))
+    """Frame for one series, clipped to SWAP_START where the series asks for it."""
+    s = get_series(key)
+    df = load_time_series(source(s))
+    return df.loc[SWAP_START:] if s.clip_start else df
 
 
 def hover_template(s: Series, label: Optional[str] = None) -> str:
@@ -1124,22 +1151,16 @@ SMI_SWAP_DEPTH = {
 SMI_STEP_TOL = 1e-8
 
 
-def _smi_url(depth_key: str, suffix: str = "") -> str:
-    return f"{BASE_URL}/smi_{depth_key}{suffix}.txt"
-
-
-@st.cache_data(ttl=12 * 3600)
 def load_smi(depth_key: str) -> pd.DataFrame:
-    """Full SMI history for one depth."""
-    return load_time_series(_smi_url(depth_key, "_lt"))
+    """SMI history for one depth, from SWAP_START on."""
+    return load_series(f"smi_{depth_key}")
 
 
-@st.cache_data(ttl=12 * 3600)
 def load_smi_steps(depth_key: str):
     """(first_step, last_step): lowest / highest resolvable SMI per station and day."""
     return (
-        load_time_series(_smi_url(depth_key, "_first_step")),
-        load_time_series(_smi_url(depth_key, "_last_step")),
+        load_series(f"smi_{depth_key}_first_step"),
+        load_series(f"smi_{depth_key}_last_step"),
     )
 
 
@@ -1247,4 +1268,232 @@ def add_smi_bands(fig, *, opacity=0.18):
             line_width=0,
             layer="below",
         )
+    return fig
+
+
+# --- Water balance -----------------------------------------------------------
+# The balance files are written by bbnet and keep its station IDs, so the file name
+# is translated here and the normals' columns are renamed on load - the same
+# MQ35 -> MQ rule load_time_series applies to every other source.
+def _bbnet_id(station: str) -> str:
+    return "MQ35" if station == "MQ" else station
+
+
+LOCAL_BALANCE_DIR = LOCAL_DATA_DIR / "water_balance"
+
+
+def balance_source(name: str) -> str:
+    """Where one water-balance file is read from - the rule of :func:`source`."""
+    if PREFER_LOCAL and (LOCAL_BALANCE_DIR / name).exists():
+        return str(LOCAL_BALANCE_DIR / name)
+    return f"{URL_BALANCE_DIR}/{name}"
+
+
+# Day-of-year normal files, keyed by the role we plot.
+BALANCE_NORMAL_FILES = {
+    "precip": "Precip-historical.csv",  # Rain + Snow
+    "et": "ETact-historical.csv",  # Interc + Eact + Tact
+    "flux": "flux_at_2m-historical.csv",
+    "storage": "storage1m-historical.csv",
+}
+
+# The normals come from the same reference run as the SMI, so both pages name the
+# same period rather than each spelling out its own years.
+BALANCE_REFERENCE_PERIOD = SMI_REFERENCE_PERIOD
+# The balance runs start with the SWAP history. The station plot opens on the CRNS
+# era, the overview raster on a single year - one year per tile is what makes the
+# tiles comparable; several years at once are read off the station plot.
+BALANCE_FIRST_YEAR = SWAP_START.year
+DEFAULT_BALANCE_SPAN_START = 2020
+DEFAULT_BALANCE_YEAR = 2024
+
+# Colours (Okabe-Ito / CARTO-Safe, CVD-safe).
+WB_COLORS = {
+    "precip": "#0072B2",  # blue
+    "et": "#999933",  # olive
+    "flux": "#CC79A7",  # reddish purple
+    "storage": "rgba(120, 120, 120, 0.25)",
+}
+
+
+@st.cache_data(ttl=12 * 3600)
+def load_water_balance(station: str) -> pd.DataFrame:
+    """Per-station daily water balance in mm/day (Rain, Snow, the ET parts,
+    flux_at_2m, storage1m).
+
+    Fails soft: a station without a balance file - WUS has none - yields an empty
+    frame, so the page drops that one plot instead of breaking.
+    """
+    raw = _source_bytes(balance_source(f"{_bbnet_id(station)}.csv"), required=False)
+    if raw is None:
+        return pd.DataFrame()
+    df = pd.read_csv(io.BytesIO(raw), engine="python", na_values="na")
+    df["datetime"] = pd.to_datetime(df["datetime"], utc=True).dt.tz_convert(None)
+    df = df.set_index("datetime").sort_index()
+    df.index.name = "Date"
+    for col in df.columns:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+    return df
+
+
+@st.cache_data(ttl=12 * 3600)
+def load_balance_normals() -> dict:
+    """Day-of-year (1..366) normals, one frame per role, station columns.
+
+    Fails soft per file: a missing normal drops its dashed line, nothing else.
+    """
+    out = {}
+    for key, fname in BALANCE_NORMAL_FILES.items():
+        raw = _source_bytes(balance_source(fname), required=False)
+        if raw is None:
+            continue
+        df = pd.read_csv(io.BytesIO(raw), engine="python", na_values="na")
+        out[key] = df.set_index("doy").rename(columns={"QUI": "DED", "MQ35": "MQ"})
+    return out
+
+
+def _normal_cumulative(normal_series, year):
+    """Map a doy-indexed normal onto calendar `year` dates and cumulate."""
+    dates = pd.date_range(f"{year}-01-01", f"{year}-12-31", freq="D")
+    vals = normal_series.reindex(dates.dayofyear).to_numpy()
+    return pd.Series(vals, index=dates).cumsum()
+
+
+def build_water_balance_figure(
+    wb,
+    normals,
+    station,
+    years,
+    *,
+    station_name=None,
+    xrange=None,
+    show_legend=True,
+    height=480,
+    compact=False,
+):
+    """Cumulative (per-calendar-year) Precip / ET / Sickerwasser@2m on real dates,
+    with the reference-period normal dashed and the 0-1 m storage as a filled band.
+
+    ``xrange`` (lo, hi) restricts both the plotted data and the x-axis to that
+    span, so the y-axis fits the visible window. ``compact`` / ``show_legend`` /
+    ``height`` tune the figure for the small per-station overview tiles.
+
+    A station without a balance file yields an empty frame, and with it an empty
+    figure - the caller decides whether to draw or to skip it.
+    """
+    fig = go.Figure()
+    if wb is None or wb.empty:
+        return fig
+    legend_seen = set()
+
+    def _show(role):
+        first = role not in legend_seen
+        legend_seen.add(role)
+        return first
+
+    lo = pd.Timestamp(xrange[0]) if xrange is not None else None
+    hi = pd.Timestamp(xrange[1]) if xrange is not None else None
+
+    def _clip(series):
+        if lo is None:
+            return series
+        return series.loc[(series.index >= lo) & (series.index <= hi)]
+
+    for year in years:
+        seg = wb.loc[f"{year}-01-01" : f"{year}-12-31"]
+        if seg.empty:
+            continue
+        rain = seg.get("Rain", 0).fillna(0)
+        snow = seg.get("Snow", 0).fillna(0)
+        precip_cum = (rain + snow).cumsum()
+        et_cum = seg[["Interc", "Eact", "Tact"]].sum(axis=1).cumsum()
+        flux_cum = seg["flux_at_2m"].cumsum()
+
+        # Storage band (actual, mm) underneath.
+        if "storage1m" in seg:
+            storage = _clip(seg["storage1m"])
+            if not storage.empty:
+                fig.add_trace(
+                    go.Scatter(
+                        x=storage.index,
+                        y=storage,
+                        name="Bodenwasserspeicher 0-1 m",
+                        legendgroup="storage",
+                        showlegend=_show("storage"),
+                        line=dict(width=0),
+                        fill="tozeroy",
+                        fillcolor=WB_COLORS["storage"],
+                        hoverinfo="skip",
+                    )
+                )
+        for role, label, series in [
+            ("precip", "Niederschlag", precip_cum),
+            ("et", "Evapotranspiration (inkl. Interzeption)", et_cum),
+            ("flux", "Sickerwasser @2 m", flux_cum),
+        ]:
+            cser = _clip(series)
+            if not cser.empty:
+                fig.add_trace(
+                    go.Scatter(
+                        x=cser.index,
+                        y=cser,
+                        name=label,
+                        legendgroup=role,
+                        showlegend=_show(role),
+                        line=dict(color=WB_COLORS[role]),
+                    )
+                )
+            ndf = normals.get(role)
+            if ndf is not None and station in ndf.columns:
+                ncum = _clip(_normal_cumulative(ndf[station], year))
+                if not ncum.empty:
+                    fig.add_trace(
+                        go.Scatter(
+                            x=ncum.index,
+                            y=ncum,
+                            legendgroup=role,
+                            showlegend=False,
+                            line=dict(color=WB_COLORS[role], dash="dash", width=0.9),
+                            opacity=0.7,
+                            hoverinfo="skip",
+                            name=f"{label} (Normal)",
+                        )
+                    )
+
+    # One proxy entry explaining the dashed normals.
+    fig.add_trace(
+        go.Scatter(
+            x=[None],
+            y=[None],
+            mode="lines",
+            name=f"Referenzzeitraum {BALANCE_REFERENCE_PERIOD}",
+            line=dict(color="#888888", dash="dash"),
+            hoverinfo="skip",
+        )
+    )
+
+    for year in years[1:]:
+        ts = pd.Timestamp(f"{year}-01-01")
+        if lo is not None and hi is not None and (ts < lo or ts > hi):
+            continue
+        fig.add_vline(x=ts, line=dict(color="#999999", dash="dot", width=1))
+    fig.add_hline(y=0, line=dict(color="#000000", width=1))
+
+    title = station_name or station
+    if compact:
+        layout_title = f"{title} ({station})"
+        margin = dict(l=40, r=10, t=28, b=20)
+    else:
+        layout_title = f"Wasserbilanz – {title} ({station})"
+        margin = dict(l=50, r=20, t=50, b=70)
+    fig.update_layout(
+        title=dict(text=layout_title, font=dict(size=13 if compact else 16)),
+        yaxis_title=None if compact else "mm (kumuliert ab Jahresbeginn)",
+        legend=dict(orientation="h", yanchor="top", y=-0.15, xanchor="center", x=0.5),
+        showlegend=show_legend,
+        margin=margin,
+        height=height,
+    )
+    if xrange is not None:
+        fig.update_xaxes(range=[lo, hi])
     return fig
