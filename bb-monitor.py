@@ -1,4 +1,3 @@
-
 # -*- coding: utf-8 -*-
 # Copyright 2024-2025 Streamlit Inc.
 #
@@ -28,7 +27,11 @@ pages = [
         title="Bodenwassermodell und Bodenfeuchteindex",
         icon=":material/water_drop:",
     ),
-    
+    st.Page(
+        "pages/4_Water_Balance.py",
+        title="Wasserbilanz",
+        icon=":material/balance:",
+    ),
 ]
 
 pg = st.navigation(pages, position="top")
