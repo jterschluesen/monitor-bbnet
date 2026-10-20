@@ -84,8 +84,8 @@ STATION_COLORS = {
 # Frame around an unresolvable index: the colour of the class the value is beyond,
 # i.e. exceptional drought at the dry bound and exceptional wetness at the wet one.
 CENSOR_FRAME_COLORS = {
-    "low": SMI_BAND_COLORS["exceptional"],
-    "high": SMI_BAND_COLORS["exceptional_wet"],
+    "low": "#000000",  # SMI_BAND_COLORS["exceptional_dry"]
+    "high": "#000000",  # SMI_BAND_COLORS["exceptional_wet"],
 }
 
 
@@ -203,11 +203,11 @@ def _sort_key(station):
 
 order = sorted(available, key=_sort_key)
 
-st.subheader("Aktueller Status")
-st.caption(
-    f"Je Standort eine Kachel mit allen Tiefen; sortiert nach dem trockensten Wert "
-    f"für {status_depth}."
-)
+st.subheader("Aktueller Bodenfeuchteindex je Standort")
+# st.caption(
+#     f"Je Standort eine Kachel mit allen Tiefen; sortiert nach dem trockensten Wert "
+#     f"für {status_depth}."
+# )
 
 grid_col, legend_col = st.columns([3, 1], gap="medium")
 
@@ -237,9 +237,9 @@ with grid_col:
                 # blue at the wet one) plus the value itself in the text colour. The
                 # pale halo keeps the row frame visible on the darkest band colours.
                 if censor:
-                    value_style = "border:2px dashed currentColor;border-radius:6px;padding:0 6px;"
+                    value_style = "border:2px solid transparent;padding:0 6px;"  # "border:2px dashed currentColor;border-radius:6px;padding:0 6px;"
                     row_frame = (
-                        f"border:3px dashed {CENSOR_FRAME_COLORS[censor]};"
+                        f"border:4px dashed {CENSOR_FRAME_COLORS[censor]};"
                         "box-shadow:0 0 0 2px rgba(255,255,255,0.65);"
                     )
                 else:

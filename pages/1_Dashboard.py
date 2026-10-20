@@ -74,7 +74,7 @@ st.write(
 )
 st.write(
     "Die dargestellten Daten beruhen auf zwei Grundlagen: der Messung der Bodenfeuchte mit kosmischen Neutronensensoren, welche die Beziehung zwischen der Menge der kosmischen Neutronen zur Bodenfeuchte ausnutzt (Messung via CRNS, siehe 'Abkürzungen und Erklärungen') und Modellergebnissen aus dem Bodenwasserhaushaltsmodell [SWAP](https://www.swap.alterra.nl/) (Boden-Wasser-Atmosphäre-Pflanze). Die Daten werden in der Einheit Volumenprozent (Vol.-%) dargestellt. "
-    "Die Daten beschreiben die Bodenfeuchte in der oberen Bodenschicht. Da die Eindringtiefe des CRNS-Signals selbst von der Bodenfeuchte abhängt, ist die Tiefe, über die die Messung aggregiert wird, variable. Eine Standortbasierte Darstellung der Messungen via CRNS ist auf der Seite Messstationen verfügbar."
+    "Die Daten beschreiben die Bodenfeuchte in der oberen Bodenschicht. Da die Eindringtiefe des CRNS-Signals selbst von der Bodenfeuchte abhängt, ist die Tiefe, über die die Messung aggregiert wird, variable. Eine standortbasierte Darstellung der Messungen via CRNS ist auf der Seite Messstationen verfügbar. "
     "Derzeit stehen die Messdaten des CRNS-Netzwerks (Cosmic Ray Neutron Sensing) von 12 Standorten in Brandenburg zur Verfügung, welche von der Universität Potsdam, dem Helmholtz-Zentrum für Umweltforschung (UFZ) sowie dem Land Brandenburg (LGBR) betrieben werden. Die Messungen dienen zur Kallibrierung des Bodenwasserhaushaltsmodell SWAP (Boden-Wasser-Atmosphäre-Pflanze) mit welchem historische Bodenfeuchtedaten für die Standorte in Brandenburg simuliert werden können. "
 )
 
@@ -655,7 +655,7 @@ with main_plot_cell:
                         # Model runs are dashed everywhere in the app.
                         line=dict(
                             color=station_colors[station],
-                            dash="dash" if source == "SWAP" else "solid",
+                            dash="5px" if source == "SWAP" else "solid",
                         ),
                     ),
                     row=row,
