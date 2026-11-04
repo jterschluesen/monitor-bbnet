@@ -9,8 +9,6 @@ from data_sources import (
     PRIMARY_CRNS,
     STOCKS,
     construction_warning,
-    URL_LOCATIONS,
-    URL_SNOW_FLAGS,
     PLOT_CONFIG,
     add_calibration_marker,
     add_range_slider,
@@ -42,18 +40,14 @@ st.set_page_config(
     layout="wide",
 )
 
-construction_warning()
+# construction_warning()
 
 st.title("Messreihen Einzelner Standorte")
 # Which sources are named here follows the profile - the sensors are not part of
 # every one, so the sentence must not promise data the page cannot show.
 _SOURCE_TEXTS = [
     "auf der Messung mit kosmischen Neutronensensoren (Messung via CRNS)",
-    *(
-        ["auf punktuellen Bodenfeuchtesensoren (SMT)"]
-        if series_for("smt")
-        else []
-    ),
+    *(["auf punktuellen Bodenfeuchtesensoren (SMT)"] if series_for("smt") else []),
     "auf dem Bodenwasserhaushaltsmodell [SWAP](https://www.swap.alterra.nl/)",
 ]
 st.write(
@@ -64,6 +58,7 @@ st.write(
     "Die Eindringtiefe der Neutronenmessung hängt unter anderem von der Bodenfeuchte selbst "
     "ab und ändert sich daher laufend. Damit Messung und Modell vergleichbar bleiben, kann das "
     "Modellergebnis ebenfalls über diese Eindringtiefe gemittelt werden (tiefengewichtet). "
+    "Alle Bodenfeuchteangaben sind Tagesmittelwerte und beschreiben die mittlere Bodenfeuchte des jeweiligen Tages. "
     "Grundsätzliche Informationen zu den Messungen finden Sie unten auf der Seite."
 )
 
@@ -113,8 +108,8 @@ def rename_smt_columns(df: pd.DataFrame) -> pd.DataFrame:
     return df.rename(columns=renamed)
 
 
-locs = load_locations(URL_LOCATIONS)
-snow_flags = load_snow_flags(URL_SNOW_FLAGS)
+locs = load_locations()
+snow_flags = load_snow_flags()
 
 
 def frame_for(series):

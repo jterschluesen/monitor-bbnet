@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 
+import html
 from datetime import timedelta
 
 import pandas as pd
@@ -20,7 +21,6 @@ from data_sources import (
     SMI_REFERENCE_PERIOD,
     SMI_SWAP_DEPTH,
     SWAP_SM_DEPTHS,
-    URL_LOCATIONS,
     PLOT_CONFIG,
     add_smi_bands,
     construction_warning,
@@ -46,13 +46,13 @@ st.set_page_config(
     layout="wide",
 )
 
-construction_warning()
+# construction_warning()
 
 st.title("Klimatischer Bodenfeuchteindex")
 st.write(
     f"Der klimatische Bodenfeuchteindex ordnet die **aktuelle Bodenfeuchte** aus dem "
     f"Bodenwasserhaushaltsmodell [SWAP](https://www.swap.alterra.nl/) in die historische "
-    f"Verteilung am selben Kalendertag ein. Er liegt zwischen 0 (sehr trocken) und 1 "
+    f"Verteilung der mittleren Bodenfecuhten am selben Kalendertag ein. Er liegt zwischen 0 (sehr trocken) und 1 "
     f"(sehr nass). Die Kacheln zeigen den aktuellen Status je Standort für drei "
     f"Tiefen ({', '.join(SMI_DEPTHS)}). Im darunter liegenden Diagramm findet sich der zeitliche "
     f"Verlauf des Indexes und optional der modellierte Bodenfeuchte. "
@@ -97,7 +97,7 @@ def _text_on(hex_color: str) -> str:
     return "#000000" if luminance > 0.55 else "#ffffff"
 
 
-locs = load_locations(URL_LOCATIONS)
+locs = load_locations()
 
 # --- Load every depth; the status tiles show all of them ---------------------
 smi_by_depth = {}
@@ -265,7 +265,7 @@ with grid_col:
 <div style="border:1px solid rgba(0,0,0,0.12);border-radius:10px;margin:4px 0;
             padding:8px;line-height:1.25;">
   <div style="font-weight:700;font-size:0.95rem;text-align:center;margin-bottom:4px;">
-    {station_label(station, locs)}</div>
+    {html.escape(station_label(station, locs))}</div>
   {"".join(depth_rows)}
   <div style="font-size:0.68rem;opacity:0.7;text-align:center;margin-top:4px;">
     Stand {date_str}</div>

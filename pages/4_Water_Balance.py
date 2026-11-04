@@ -12,7 +12,6 @@ from data_sources import (
     DEFAULT_BALANCE_YEAR,
     PLOT_CONFIG,
     STOCKS,
-    URL_LOCATIONS,
     build_water_balance_figure,
     construction_warning,
     get_shared_stations,
@@ -30,7 +29,7 @@ st.set_page_config(
     layout="wide",
 )
 
-construction_warning()
+# construction_warning()
 
 st.title("Wasserbilanz")
 st.write(
@@ -41,7 +40,7 @@ st.write(
     "Bodenwasserspeicher der obersten 1 m Bodenschicht."
 )
 
-locs = load_locations(URL_LOCATIONS)
+locs = load_locations()
 # Stations without a balance file are dropped where they are loaded, not listed here.
 wb_stations = list(STOCKS)
 normals = load_balance_normals()

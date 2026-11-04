@@ -25,15 +25,16 @@ from data_sources import (
     FULL_RANGE_LABEL,
     HORIZON_MAP,
     STOCKS,
+    SWAP_DOWNLOAD_PRODUCTS,
+    UNIT_DECIMALS,
     PRIMARY_CRNS,
     PRIMARY_D86,
     UNITS,
     construction_warning,
-    URL_LOCATIONS,
-    URL_SNOW_FLAGS,
     PLOT_CONFIG,
     add_range_slider,
     add_snow_shading,
+    build_download_zip,
     get_download_unit,
     get_mask_snow,
     get_series,
@@ -43,6 +44,7 @@ from data_sources import (
     load_locations,
     load_series,
     load_snow_flags,
+    load_swap_readme,
     maybe_mask_snow,
     moisture_label,
     normalize_stocks,
@@ -65,7 +67,7 @@ st.set_page_config(
     layout="wide",
 )
 
-construction_warning()
+# construction_warning()
 
 st.title("Bodenwassermonitor Brandenburg")
 st.write(
@@ -74,6 +76,7 @@ st.write(
 )
 st.write(
     "Die dargestellten Daten beruhen auf zwei Grundlagen: der Messung der Bodenfeuchte mit kosmischen Neutronensensoren, welche die Beziehung zwischen der Menge der kosmischen Neutronen zur Bodenfeuchte ausnutzt (Messung via CRNS, siehe 'Abkürzungen und Erklärungen') und Modellergebnissen aus dem Bodenwasserhaushaltsmodell [SWAP](https://www.swap.alterra.nl/) (Boden-Wasser-Atmosphäre-Pflanze). Die Daten werden in der Einheit Volumenprozent (Vol.-%) dargestellt. "
+    "Alle Bodenfeuchteangaben sind Tagesmittelwerte und beschreiben die mittlere Bodenfeuchte des jeweiligen Tages. "
     "Die Daten beschreiben die Bodenfeuchte in der oberen Bodenschicht. Da die Eindringtiefe des CRNS-Signals selbst von der Bodenfeuchte abhängt, ist die Tiefe, über die die Messung aggregiert wird, variable. Eine standortbasierte Darstellung der Messungen via CRNS ist auf der Seite Messstationen verfügbar. "
     "Derzeit stehen die Messdaten des CRNS-Netzwerks (Cosmic Ray Neutron Sensing) von 12 Standorten in Brandenburg zur Verfügung, welche von der Universität Potsdam, dem Helmholtz-Zentrum für Umweltforschung (UFZ) sowie dem Land Brandenburg (LGBR) betrieben werden. Die Messungen dienen zur Kallibrierung des Bodenwasserhaushaltsmodell SWAP (Boden-Wasser-Atmosphäre-Pflanze) mit welchem historische Bodenfeuchtedaten für die Standorte in Brandenburg simuliert werden können. "
 )
@@ -83,7 +86,7 @@ def stocks_to_str(stocks):
     return ",".join(stocks)
 
 
-locs = load_locations(URL_LOCATIONS)
+locs = load_locations()
 station_ids = [station for station in STOCKS if station in locs.index]
 
 
@@ -230,18 +233,17 @@ if not tickers:
 data2_full = load_series(PRIMARY_CRNS)
 sim2_full = load_series("swap_0_30")  # use 0-30cm instead of weighted
 d862_full = load_series(PRIMARY_D86)
-snow_flags = load_snow_flags(URL_SNOW_FLAGS)
+snow_flags = load_snow_flags()
 # Shade exactly the phases of the stations on screen, so the band matches the gaps
 # that masking leaves in the curves.
 snow_phase_periods = union_snow_periods(snow_flags, tickers)
-# Snow biases the neutron count: the plots show gaps there, the download keeps the
-# unmasked source data.
+# Snow biases the neutron count, so the CRNS series is blanked out during a snow
+# phase - in the plots and, following the same setting, in the download.
 crns_plot_full = maybe_mask_snow(data2_full, snow_flags)
-# https://b2drop.eudat.eu/s/yr5d6i72cCacYpH/swc-from-swap.txt
 
 
 # The overview window follows the CRNS record only: the model runs reach back to
-# 1990 and would otherwise stretch the axis and the navigator far beyond the
+# 1982 and would otherwise stretch the axis and the navigator far beyond the
 # measurements.
 min_date = selected_min_date(data2_full, tickers)
 max_date = selected_max_date(data2_full, tickers)
@@ -384,7 +386,7 @@ source_data = {
     "SWAP": sim2_full.loc[crns_span[0] : crns_span[1]].reindex(columns=tickers),
 }
 
-locs = load_locations(URL_LOCATIONS)
+locs = load_locations()
 
 
 # @st.cache_resource(show_spinner=False, ttl="6h")
@@ -733,16 +735,26 @@ if (
 ):
     st.session_state.download_horizon = FULL_RANGE_LABEL
 
+# The station grid wraps into the next row at this width.
+DOWNLOAD_COLUMNS = 3
+
 with st.expander("Download", expanded=False):
-    st.write("Datenarten")
-    source_cols = st.columns(3)
-    include_crns = source_cols[0].checkbox(
-        "Bodenfeuchte (Messung via CRNS)", value=True
-    )
-    include_swap = source_cols[1].checkbox("Bodenfeuchte (Modell SWAP)", value=False)
-    include_d86 = source_cols[2].checkbox(
-        "Eindringtiefe (Messung via CRNS)", value=False
-    )
+    st.write("Datenart")
+    # Two blocks side by side: what the CRNS measures, and what SWAP models.
+    # Every SWAP product is its own file, so each is picked on its own; the pill
+    # text comes from the registry to stay in step with the plots above.
+    crns_col, swap_col = st.columns(2)
+    crns_col.markdown("**CRNS-Daten**")
+    include_crns = crns_col.checkbox("CRNS: Bodenfeuchte", value=True)
+    include_d86 = crns_col.checkbox("CRNS: Eindringtiefe", value=False)
+    swap_col.markdown("**SWAP-Bodenfeuchte**")
+    selected_swap = [
+        (key, slug)
+        for key, slug in SWAP_DOWNLOAD_PRODUCTS
+        if swap_col.checkbox(
+            f"SWAP: {get_series(key).pill}", key=f"download_swap_{key}"
+        )
+    ]
 
     # The plots always show Vol.-%; only the download offers a choice of unit.
     if "download_unit" not in st.session_state:
@@ -766,19 +778,35 @@ with st.expander("Download", expanded=False):
     sync_download_unit()
 
     unit_suffix = "Vol-Prozent" if get_download_unit() == "Vol.-%" else "m3_pro_m3"
+    unit_decimals = UNIT_DECIMALS[get_download_unit()]
     # The CRNS export follows the snow setting from the selection above.
     selected_sources = []
     if include_crns:
         selected_sources.append(
-            (f"Bodenfeuchte_CRNS_{unit_suffix}", to_download_unit(crns_plot_full))
+            (
+                f"Bodenfeuchte_CRNS_{unit_suffix}",
+                "Bodenfeuchte (CRNS)",
+                to_download_unit(crns_plot_full),
+                unit_decimals,
+            )
         )
-    if include_swap:
+    for key, slug in selected_swap:
         selected_sources.append(
-            (f"Bodenfeuchte_SWAP_{unit_suffix}", to_download_unit(sim2_full))
+            (
+                f"Bodenfeuchte_SWAP_{slug}_{unit_suffix}",
+                f"SWAP {get_series(key).pill}",
+                to_download_unit(load_series(key)),
+                unit_decimals,
+            )
         )
     if include_d86:
         selected_sources.append(
-            ("Eindringtiefe_CRNS_cm", maybe_mask_snow(d862_full, snow_flags))
+            (
+                "Eindringtiefe_CRNS_cm",
+                "Eindringtiefe (CRNS)",
+                maybe_mask_snow(d862_full, snow_flags),
+                1,  # cm, one decimal whatever unit the soil moisture uses
+            )
         )
 
     st.write("Stationen zum Download")
@@ -786,9 +814,9 @@ with st.expander("Download", expanded=False):
         for station in STOCKS:
             st.session_state[f"download_station_{station}"] = True
 
-    station_cols = st.columns(3)
+    station_cols = st.columns(DOWNLOAD_COLUMNS)
     for idx, station in enumerate(STOCKS):
-        station_cols[idx % 3].checkbox(
+        station_cols[idx % DOWNLOAD_COLUMNS].checkbox(
             station_label(station, locs), key=f"download_station_{station}"
         )
 
@@ -800,7 +828,16 @@ with st.expander("Download", expanded=False):
     st.session_state.download_stations = download_stations
 
     effective_download_stations = normalize_stocks(download_stations) or tickers
-    download_min_date = selected_min_date(data2_full, effective_download_stations)
+    # The window follows the data types that are actually selected. Bound to the
+    # CRNS record it would start in 2020 and put the SWAP history, which reaches
+    # back to SWAP_START, out of reach of the download.
+    download_min_date = min(
+        (
+            selected_min_date(frame, effective_download_stations)
+            for _, _, frame, _ in selected_sources
+        ),
+        default=selected_min_date(data2_full, effective_download_stations),
+    )
     download_max_date = today_date
 
     if (
@@ -871,8 +908,8 @@ with st.expander("Download", expanded=False):
     download_start = pd.to_datetime(st.session_state.download_start)
     download_end = pd.to_datetime(st.session_state.download_end)
     normalized_download_stations = normalize_stocks(download_stations)
-    preview_frames = []
-    for source_name, source_df in selected_sources:
+    download_products = []
+    for stem, tab_label, source_df, decimals in selected_sources:
         source_slice = source_df.loc[download_start:download_end]
         if normalized_download_stations:
             # reindex so a station absent from this source (e.g. WUS in SWAP)
@@ -880,41 +917,59 @@ with st.expander("Download", expanded=False):
             source_slice = source_slice.reindex(columns=normalized_download_stations)
         else:
             source_slice = pd.DataFrame(index=source_slice.index)
-        source_slice = source_slice.rename(columns=lambda col: f"{col}_{source_name}")
-        preview_frames.append(source_slice)
-
-    if preview_frames:
-        download_data = pd.concat(preview_frames, axis=1)
-    else:
-        # Keep time index visible even if no source is selected.
-        download_data = pd.DataFrame(
-            index=data2_full.loc[download_start:download_end].index
-        )
+        download_products.append((stem, tab_label, source_slice, decimals))
 
     st.caption(
-        "Vorschau der Downloaddaten. Die Spaltennamen nennen Standort, Datenart und "
-        f"Einheit; die Bodenfeuchte steht in {get_download_unit()}. "
+        "Vorschau der Downloaddaten. Je Datenart eine Datei, die Spalten sind die "
+        f"gewählten Standorte; die Bodenfeuchte steht in {get_download_unit()}. "
         + (
             "Messwerte via CRNS in Schneephasen sind ausgeblendet."
             if get_mask_snow()
             else "Schneephasen sind nicht ausgeblendet."
         )
     )
-    st.dataframe(download_data, width="stretch")
+    if len(download_products) > 1:
+        for tab, (_, tab_label, frame, _dec) in zip(
+            st.tabs([label for _, label, _, _ in download_products]),
+            download_products,
+        ):
+            tab.dataframe(frame, width="stretch")
+    elif download_products:
+        st.dataframe(download_products[0][2], width="stretch")
+    else:
+        # Keep the time index visible even if no data type is selected.
+        st.dataframe(
+            pd.DataFrame(index=data2_full.loc[download_start:download_end].index),
+            width="stretch",
+        )
 
-    license_text = st.write(
+    st.write(
         "Für die Nutzung aller Daten im obenstehenden Verzeichnis gilt die Creative Commons Attribution Lizenz CC-BY 4.0. "
         "Bitte zitieren Sie im Nutzungsfall die Daten wie folgt: "
         "University of Potsdam, Helmholtz Centre for Environmental Research: CRNS-based soil moisture and drought monitoring in the Germany federal state of Brandenburg [Data set], URL: https://cosmic-sense.github.io/brandenburg/daten/."
     )
     st.link_button("CC-BY 4.0", "https://creativecommons.org/licenses/by/4.0/")
+
+    st.info(
+        "Die bereitgestellten Daten sind Modellergebnisse aus einem "
+        "täglichen automatisierten Modelllauf. Sie durchlaufen keine manuelle "
+        "Qualitätskontrolle und können sich durch die Aktualisierung der Eingangsdaten "
+        "nachträglich ändern. Da Modell- und CRNS-Daten Teil laufender Forschungen sind, "
+        "bleiben zusätzliche Änderungen durch Neukalibrierungen oder Anpassungen des "
+        "CRNS-Produkts vorbehalten.",
+        icon=":material/info:",
+    )
     if normalized_download_stations and selected_sources:
-        csv_content = download_data.reset_index().to_csv(index=False)
+        # The README documents the SWAP products, so it rides along with them.
+        archive = build_download_zip(
+            [(stem, frame, dec) for stem, _, frame, dec in download_products],
+            readme=load_swap_readme() if selected_swap else None,
+        )
         st.download_button(
-            label="CSV herunterladen",
-            data=csv_content.encode("utf-8"),
-            file_name="monitoring_subset.csv",
-            mime="text/csv",
+            label="ZIP herunterladen",
+            data=archive,
+            file_name="Bodenfeuchte_BB.zip",
+            mime="application/zip",
             use_container_width=True,
         )
     elif not selected_sources:

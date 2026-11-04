@@ -1,6 +1,8 @@
 import io
 import os
+import urllib.error
 import urllib.request
+import zipfile
 
 import pandas as pd
 import streamlit as st
@@ -19,47 +21,10 @@ def construction_warning():
     )
 
 
-# --- Reading sources ---------------------------------------------------------
-# All data come from the remote directory. A dead host must fail fast and with a
-# readable message instead of hanging the page and dumping a URLError traceback.
-REMOTE_TIMEOUT = 20  # seconds per file
-
-
-def _source_bytes(url: str, *, required: bool = True):
-    """Raw content of a source file.
-
-    ``required=False`` returns ``None`` instead of stopping the page, for optional
-    files whose absence only drops a single feature (e.g. the snow flags).
-    """
-    text = str(url)
-    if not text.lower().startswith(("http://", "https://")):
-        path = Path(text)
-        if not required and not path.exists():
-            return None
-        return path.read_bytes()
-    try:
-        with urllib.request.urlopen(text, timeout=REMOTE_TIMEOUT) as response:
-            return response.read()
-    except Exception as exc:
-        if not required:
-            return None
-        st.error(
-            "Die Daten sind derzeit nicht abrufbar: Das Online-Verzeichnis "
-            f"antwortet nicht ({text.rsplit('/', 1)[-1]}). Bitte später erneut "
-            "versuchen.",
-            icon=":material/cloud_off:",
-        )
-        st.caption(f"Technische Meldung: {type(exc).__name__}: {exc}")
-        st.stop()
-        # Outside a Streamlit run st.stop() is a no-op; do not return None silently.
-        raise RuntimeError(f"Quelle nicht erreichbar: {text}") from exc
-
-
-# The public remote directory. Only series the online site may show have a URL
-# here; everything else is read from the local mirror - see the registry below.
+# The public remote directory. A file is named once, by its bare name: the local
+# mirror and the remote directory use the same names, and :func:`data_source`
+# builds the URL - see the registries below.
 BASE_URL = "https://b2drop.eudat.eu//public.php/dav/files/yr5d6i72cCacYpH"
-URL_LOCATIONS = f"{BASE_URL}/metadata-locations.csv"
-URL_SNOW_FLAGS = f"{BASE_URL}/snow-flags.csv"
 # Per-station daily water balance + the day-of-year normals, one public directory
 # of its own; the files are named in the water-balance section further down.
 URL_BALANCE_DIR = "https://b2drop.eudat.eu//public.php/dav/files/7dHbNH26QT2nCef"
@@ -70,11 +35,21 @@ SWAP_SM_DEPTHS = {
     "0–1 m": "swap_0_100",
     "0–2 m": "swap_0_200",
 }
+# The SWAP products the download offers, as (series key, file-name slug). The
+# slugs are ASCII on purpose: the pill labels carry an en dash and a space, which
+# have no business in a file name.
+SWAP_DOWNLOAD_PRODUCTS = [
+    ("swap", "tiefengewichtet"),
+    ("swap_0_30", "0-30cm"),
+    ("swap_0_100", "0-100cm"),
+    ("swap_0_200", "0-200cm"),
+]
 
-# The SWAP runs reach back to 1950, the CRNS record starts in 2020. Clip the model
-# series to the start of the SMI reference period, so the full series shows the
-# same history the drought classification is built on.
-SWAP_START = pd.Timestamp("1994-01-01")
+# The published SWAP files start in 1982, the first year both year-dependent model
+# inputs are observed rather than held; the run itself reaches back to 1951 as a
+# cold start. Clipping here keeps an older, longer mirror from stretching the axes
+# into years the pipeline does not publish.
+SWAP_START = pd.Timestamp("1982-01-01")
 
 
 # --- Profiles ----------------------------------------------------------------
@@ -106,9 +81,119 @@ def _read_profile() -> str:
 
 PROFILE = _read_profile()
 _LEVEL = PROFILE_LEVELS[PROFILE]
-# Dev convenience only: serve *public* series from data/ too, for offline work.
-# Never widens what is visible and never makes a hidden series remote.
-PREFER_LOCAL = os.getenv("BB_DATA_LOCAL", "") == "1"
+
+
+# A dev run reads the local mirror only when the remote directory does not
+# answer, so it keeps working offline while still showing what is published.
+LOCAL_FALLBACK = PROFILE == "dev"
+
+# The files that are not plottable series: the station metadata, the snow flags
+# and the README the download ships. Named like the series, so the same rule
+# reaches them.
+FILES = {
+    "locations": "metadata-locations.csv",
+    "snow_flags": "snow-flags.csv",
+    "swap_readme": "README-swap-soil-moisture.md",
+}
+
+
+def data_source(
+    file: str, tier: str = "public", *, base: str = BASE_URL, subdir: str = ""
+) -> tuple[str, ...]:
+    """Where one file may be read from, best source first.
+
+    A non-public file is only ever local - it is not published. A public file is
+    read from ``base``, with the local mirror behind it where a fallback is
+    allowed. :func:`load_bytes` walks the result in order.
+    """
+    local = LOCAL_DATA_DIR / subdir / file
+    if tier != "public":
+        return (str(local),)
+    remote = f"{base}/{file}"
+    if LOCAL_FALLBACK and local.exists():
+        return (remote, str(local))
+    return (remote,)
+
+
+# --- Reading sources ---------------------------------------------------------
+# A dead host must fail fast and with a readable message instead of hanging the
+# page and dumping a URLError traceback.
+REMOTE_TIMEOUT = 20  # seconds per file
+# How long a read stays cached. The pipeline publishes once a day, so this only
+# decides how soon a re-run of it shows up in an open browser tab.
+CACHE_TTL = 3 * 3600  # seconds
+# Named once per file: the loaders are cached, so a repeated read is not a
+# repeated fetch and a warning per rerun would be noise.
+_FALLBACK_WARNED = set()
+
+
+def _read_one(text: str) -> bytes:
+    """Content of one source - a URL is fetched, anything else read as a path."""
+    if text.lower().startswith(("http://", "https://")):
+        with urllib.request.urlopen(text, timeout=REMOTE_TIMEOUT) as response:
+            return response.read()
+    return Path(text).read_bytes()
+
+
+def _is_missing(error) -> bool:
+    """Whether the remote answered and said the file is not there."""
+    return isinstance(error, urllib.error.HTTPError) and error.code == 404
+
+
+def _warn_fallback(text: str, error):
+    if text in _FALLBACK_WARNED:
+        return
+    _FALLBACK_WARNED.add(text)
+    reason = (
+        "liegt nicht im Online-Verzeichnis"
+        if _is_missing(error)
+        else "ist online nicht abrufbar"
+    )
+    st.warning(
+        f"{Path(text).name} {reason}; gelesen wird die lokale Kopie. Sie ist so "
+        "aktuell wie der letzte Abgleich.",
+        icon=":material/cloud_off:",
+    )
+
+
+def load_bytes(sources: tuple[str, ...], *, required: bool = True):
+    """Raw content of one file, from the first source that answers.
+
+    ``sources`` is what :func:`data_source` returns. ``required=False`` returns
+    ``None`` instead of stopping the page, for optional files whose absence only
+    drops a single feature (e.g. the snow flags).
+    """
+    errors = []
+    for index, text in enumerate(sources):
+        try:
+            data = _read_one(text)
+        except Exception as exc:
+            errors.append(exc)
+            continue
+        if index:
+            _warn_fallback(text, errors[0])
+        return data
+    if not required:
+        return None
+    name = str(sources[0]).rsplit("/", 1)[-1]
+    # A 404 is not a dead host: the directory answered, the file is not in it.
+    # Saying "does not answer" there sends everyone hunting the wrong problem.
+    if _is_missing(errors[0]):
+        st.error(
+            f"Die Daten sind derzeit nicht abrufbar: {name} liegt nicht im "
+            "Online-Verzeichnis. Bitte später erneut versuchen.",
+            icon=":material/cloud_off:",
+        )
+    else:
+        st.error(
+            "Die Daten sind derzeit nicht abrufbar: Das Online-Verzeichnis "
+            f"antwortet nicht ({name}). Bitte später erneut versuchen.",
+            icon=":material/cloud_off:",
+        )
+    st.caption(f"Technische Meldung: {type(errors[0]).__name__}: {errors[0]}")
+    st.stop()
+    # Outside a Streamlit run st.stop() is a no-op; do not return None silently.
+    raise RuntimeError(f"Quelle nicht erreichbar: {sources[0]}") from errors[0]
 
 
 @dataclass(frozen=True)
@@ -119,8 +204,7 @@ class Series:
     hover: str  # spelled-out German sentence for the tooltip
     group: str  # "crns" | "model" | "smt" | "smi"
     tier: str  # "public" | "internal" | "dev"
-    remote: Optional[str] = None  # set ONLY when tier == "public"
-    local: Optional[str] = None  # file under data/, required when tier != "public"
+    file: str  # bare file name, the same in data/ and in the remote directory
     color: Optional[str] = None
     dash: Optional[str] = None
     axis: str = "swc"  # "swc" (primary) | "d86" (secondary)
@@ -136,13 +220,9 @@ class Series:
     default: bool = False  # preselected in its pill row
 
 
-def source(s: Series) -> str:
-    """Where this series is read from. A non-public series is never remote."""
-    if s.tier != "public":
-        return str(LOCAL_DATA_DIR / s.local)
-    if PREFER_LOCAL and s.local and (LOCAL_DATA_DIR / s.local).exists():
-        return str(LOCAL_DATA_DIR / s.local)
-    return s.remote
+def source(s: Series) -> tuple[str, ...]:
+    """Where this series may be read from."""
+    return data_source(s.file, s.tier)
 
 
 # --- The series registry -----------------------------------------------------
@@ -160,8 +240,7 @@ SERIES = [
         f"{_CRNS}, Eindringtiefe der Messung, Auswertung mit neptoon)",
         "crns",
         "public",
-        remote=f"{BASE_URL}/d86-from-neptoon.txt",
-        local="d86-from-neptoon.txt",
+        file="d86-from-neptoon.txt",
         color="#5A2A00",  # brown
         axis="d86",
         unit="cm",
@@ -182,7 +261,7 @@ SERIES = [
         f"{_CRNS}, Eindringtiefe, Auswertung mit M)",
         "crns",
         "dev",
-        local="d86-from-crns.txt",
+        file="d86-from-crns.txt",
         color="#B07A4A",
         dash="dot",
         axis="d86",
@@ -201,8 +280,7 @@ SERIES = [
         "Bodenfeuchte (Modell SWAP, tiefengewichtet über die Eindringtiefe)",
         "model",
         "public",
-        remote=f"{BASE_URL}/swc-from-swap.txt",
-        local="swc-from-swap.txt",
+        file="swc-from-swap-daymean.txt",
         color="#3F007D",
         dash="5px",
         order=20,
@@ -216,8 +294,7 @@ SERIES = [
         "Bodenfeuchte (Modell SWAP, Mittel 0–30 cm)",
         "model",
         "public",
-        remote=f"{BASE_URL}/swc-from-swap-mean-0_30.txt",
-        local="swc-from-swap-mean-0_30.txt",
+        file="swc-from-swap-0_30-daymean.txt",
         color="#BCBDDC",
         dash="5px",
         order=21,
@@ -230,8 +307,7 @@ SERIES = [
         "Bodenfeuchte (Modell SWAP, Mittel 0–1 m)",
         "model",
         "public",
-        remote=f"{BASE_URL}/swc-from-swap-mean-0_100.txt",
-        local="swc-from-swap-mean-0_100.txt",
+        file="swc-from-swap-0_100-daymean.txt",
         color="#807DBA",
         dash="5px",
         order=22,
@@ -244,8 +320,7 @@ SERIES = [
         "Bodenfeuchte (Modell SWAP, Mittel 0–2 m)",
         "model",
         "public",
-        remote=f"{BASE_URL}/swc-from-swap-mean-0_200.txt",
-        local="swc-from-swap-mean-0_200.txt",
+        file="swc-from-swap-0_200-daymean.txt",
         color="#54278F",
         dash="5px",
         order=23,
@@ -259,8 +334,7 @@ SERIES = [
         f"{_CRNS}, lokale Kalibrierung mit UTS)",
         "crns",
         "public",
-        remote=f"{BASE_URL}/swc-neptoon_UTS.txt",
-        local="swc-neptoon_UTS.txt",
+        file="swc-neptoon_UTS.txt",
         color="#0072B2",  # blue
         order=60,
         snow_masked=True,
@@ -273,7 +347,7 @@ SERIES = [
         f"{_CRNS}, lokale Kalibrierung mit Desilets)",
         "crns",
         "internal",
-        local="swc-neptoon_DES.txt",
+        file="swc-neptoon_DES.txt",
         color="#56B4E9",  # sky blue
         order=61,
         snow_masked=True,
@@ -285,7 +359,7 @@ SERIES = [
         f"{_CRNS}, generelle Kalibrierung mit Desilets)",
         "crns",
         "internal",
-        local="swc-neptoon_DES_general.txt",
+        file="swc-neptoon_DES_general.txt",
         color="#E69F00",  # orange
         order=62,
         snow_masked=True,
@@ -297,7 +371,7 @@ SERIES = [
         f"{_CRNS}, generelle Kalibrierung mit Desilets,  M)",
         "crns",
         "dev",
-        local="swc-from-crns.txt",
+        file="swc-from-crns.txt",
         color="#F0C060",
         order=63,
         snow_masked=True,
@@ -309,7 +383,7 @@ SERIES = [
         f"{_CRNS}, lokale Kalibrierung mit UTS, altes preprocessing)",
         "crns",
         "dev",
-        local="swc-neptoon_UTS_oldpreproc.txt",
+        file="swc-neptoon_UTS_oldpreproc.txt",
         color="#940051",
         # dash="dash",
         order=70,
@@ -322,7 +396,7 @@ SERIES = [
         f"{_CRNS}, lokale Kalibrierung mit Desilets, altes preprocessing)",
         "crns",
         "dev",
-        local="swc-neptoon_DES_oldpreproc.txt",
+        file="swc-neptoon_DES_oldpreproc.txt",
         color="#AC3898",
         # dash="dash",
         order=71,
@@ -335,7 +409,7 @@ SERIES = [
         f"{_CRNS}, generelle Kalibrierung mit Desilets, M, altes preprocessing)",
         "crns",
         "dev",
-        local="swc-from-crns_oldpreproc.txt",
+        file="swc-from-crns_oldpreproc.txt",
         color="#CC79A7",  # reddish purple
         # dash="dash",
         order=72,
@@ -350,7 +424,7 @@ SERIES = [
         "Bodenfeuchte (Sensoren SMT",
         "smt",
         "internal",
-        local="vwc-from-smt_daily.txt",
+        file="vwc-from-smt_daily.txt",
         dash="2px",
         order=80,
     ),
@@ -359,9 +433,9 @@ SERIES = [
 # --- Bodenfeuchteindex -------------------------------------------------------
 # Not plotted from the pill rows; registered so the SMI page reads its files by the
 # same rules. Derived from the SWAP run, so clipped like it. Per depth: the full
-# history (``_lt``) and the lowest / highest resolvable SMI per day (see
+# history (no suffix) and the lowest / highest resolvable SMI per day (see
 # ``smi_censoring``).
-_SMI_FILES = {"": "_lt", "_first_step": "_first_step", "_last_step": "_last_step"}
+_SMI_FILES = {"": "", "_first_step": "_first_step", "_last_step": "_last_step"}
 SERIES += [
     Series(
         f"smi_{depth}{key_suffix}",
@@ -370,7 +444,7 @@ SERIES += [
         f"Bodenfeuchteindex (Modell SWAP, {depth})",
         "smi",
         "public",
-        remote=f"{BASE_URL}/smi_{depth}{file_suffix}.txt",
+        file=f"smi_{depth}{file_suffix}.txt",
         unit="",
         clip_start=True,
     )
@@ -384,7 +458,7 @@ _BY_KEY = {s.key: s for s in SERIES}
 def _available(s: Series) -> bool:
     # A hidden series whose local mirror is absent is dropped rather than raising,
     # so a wrong profile degrades instead of breaking the page.
-    return s.tier == "public" or (LOCAL_DATA_DIR / s.local).exists()
+    return s.tier == "public" or (LOCAL_DATA_DIR / s.file).exists()
 
 
 def series_for(group: Optional[str] = None):
@@ -434,9 +508,11 @@ STOCKS = [
 DEFAULT_STOCKS = ["OEH", "LIN"]
 
 
-@st.cache_data(ttl=12 * 3600)
-def load_time_series(url: str, sep: Optional[str] = "\t") -> pd.DataFrame:
-    raw = _source_bytes(url)
+@st.cache_data(ttl=CACHE_TTL)
+def load_time_series(
+    sources: tuple[str, ...], sep: Optional[str] = "\t"
+) -> pd.DataFrame:
+    raw = load_bytes(sources)
     df = pd.read_csv(io.BytesIO(raw), sep=sep, engine="python", na_values="na")
     if sep == "\t" and df.shape[1] == 1:
         df = pd.read_csv(io.BytesIO(raw), sep=",", engine="python", na_values="na")
@@ -453,9 +529,9 @@ def load_time_series(url: str, sep: Optional[str] = "\t") -> pd.DataFrame:
     return df
 
 
-@st.cache_data(ttl=12 * 3600)
-def load_locations(url: str = URL_LOCATIONS, sep: Optional[str] = "\t") -> pd.DataFrame:
-    raw = _source_bytes(url)
+@st.cache_data(ttl=CACHE_TTL)
+def load_locations(sep: Optional[str] = "\t") -> pd.DataFrame:
+    raw = load_bytes(data_source(FILES["locations"]))
     df = pd.read_csv(io.BytesIO(raw), sep=sep, engine="python")
     if sep == "\t" and df.shape[1] == 1:
         df = pd.read_csv(io.BytesIO(raw), sep=",", engine="python")
@@ -533,6 +609,10 @@ SHARED_UNIT = "shared_unit"
 # Soil moisture is stored as m3/m3; Vol.-% is the same number times 100.
 UNITS = {"Vol.-%": 100.0, "m³/m³": 1.0}
 DEFAULT_UNIT = "Vol.-%"
+# Decimals the CSV export writes. Both carry the same precision; without this the
+# multiplication by 100 leaks float noise into the file, e.g. 0.164 Vol.-% as
+# 16.400000000000002.
+UNIT_DECIMALS = {"Vol.-%": 1, "m³/m³": 3}
 
 
 def window_from_horizon(horizon, min_date: date, max_date: date):
@@ -620,6 +700,29 @@ def to_download_unit(data):
     if data is None:
         return None
     return data * UNITS[get_download_unit()]
+
+
+@st.cache_data(ttl=CACHE_TTL)
+def load_swap_readme() -> Optional[bytes]:
+    """The SWAP product documentation, shipped alongside every SWAP download.
+
+    Fails soft: an unreachable README only drops one file from the archive.
+    """
+    return load_bytes(data_source(FILES["swap_readme"]), required=False)
+
+
+# One CSV per product, stations as its columns: a combined table would repeat the
+# product name in every column header and force one unit on all of them.
+def build_download_zip(products, readme: Optional[bytes] = None) -> bytes:
+    """``[(file stem, frame, decimals)]`` plus the optional README as one archive."""
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        for name, frame, decimals in products:
+            csv = frame.reset_index().to_csv(index=False, float_format=f"%.{decimals}f")
+            archive.writestr(f"{name}.csv", csv)
+        if readme is not None:
+            archive.writestr(FILES["swap_readme"], readme)
+    return buffer.getvalue()
 
 
 # --- Labels ------------------------------------------------------------------
@@ -803,14 +906,14 @@ SNOW_FILL_BAND = "rgba(125, 185, 232, 0.85)"
 SNOW_LABEL = "Schneephase"
 
 
-@st.cache_data(ttl=12 * 3600)
-def load_snow_flags(url: str = URL_SNOW_FLAGS) -> pd.DataFrame:
+@st.cache_data(ttl=CACHE_TTL)
+def load_snow_flags() -> pd.DataFrame:
     """Daily per-site snow flags (incl. an ``any_site`` aggregate column).
 
     Fails soft: if the file is missing/unreachable, return an empty frame so the
     plots simply render without snow shading instead of breaking the page.
     """
-    raw = _source_bytes(url, required=False)
+    raw = load_bytes(data_source(FILES["snow_flags"]), required=False)
     if raw is None:
         return pd.DataFrame()
     try:
@@ -1282,11 +1385,9 @@ def _bbnet_id(station: str) -> str:
 LOCAL_BALANCE_DIR = LOCAL_DATA_DIR / "water_balance"
 
 
-def balance_source(name: str) -> str:
-    """Where one water-balance file is read from - the rule of :func:`source`."""
-    if PREFER_LOCAL and (LOCAL_BALANCE_DIR / name).exists():
-        return str(LOCAL_BALANCE_DIR / name)
-    return f"{URL_BALANCE_DIR}/{name}"
+def balance_source(name: str) -> tuple[str, ...]:
+    """Where one water-balance file may be read from - the rule of :func:`source`."""
+    return data_source(name, base=URL_BALANCE_DIR, subdir=LOCAL_BALANCE_DIR.name)
 
 
 # Day-of-year normal files, keyed by the role we plot.
@@ -1316,7 +1417,7 @@ WB_COLORS = {
 }
 
 
-@st.cache_data(ttl=12 * 3600)
+@st.cache_data(ttl=CACHE_TTL)
 def load_water_balance(station: str) -> pd.DataFrame:
     """Per-station daily water balance in mm/day (Rain, Snow, the ET parts,
     flux_at_2m, storage1m).
@@ -1324,7 +1425,7 @@ def load_water_balance(station: str) -> pd.DataFrame:
     Fails soft: a station without a balance file - WUS has none - yields an empty
     frame, so the page drops that one plot instead of breaking.
     """
-    raw = _source_bytes(balance_source(f"{_bbnet_id(station)}.csv"), required=False)
+    raw = load_bytes(balance_source(f"{_bbnet_id(station)}.csv"), required=False)
     if raw is None:
         return pd.DataFrame()
     df = pd.read_csv(io.BytesIO(raw), engine="python", na_values="na")
@@ -1336,7 +1437,7 @@ def load_water_balance(station: str) -> pd.DataFrame:
     return df
 
 
-@st.cache_data(ttl=12 * 3600)
+@st.cache_data(ttl=CACHE_TTL)
 def load_balance_normals() -> dict:
     """Day-of-year (1..366) normals, one frame per role, station columns.
 
@@ -1344,7 +1445,7 @@ def load_balance_normals() -> dict:
     """
     out = {}
     for key, fname in BALANCE_NORMAL_FILES.items():
-        raw = _source_bytes(balance_source(fname), required=False)
+        raw = load_bytes(balance_source(fname), required=False)
         if raw is None:
             continue
         df = pd.read_csv(io.BytesIO(raw), engine="python", na_values="na")
